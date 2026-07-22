@@ -58,6 +58,11 @@
         <button id="overlay-close" class="btn">✕</button>
       </div>
       <pre id="overlay-body"></pre>
+      <!-- Prompt shown for exec sessions: run further scripts in the same view -->
+      <form id="overlay-exec" class="overlay-exec hidden">
+        <span class="prompt">$</span>
+        <input id="overlay-exec-cmd" type="text" placeholder="run another script… (⏎ to run)" spellcheck="false" autocomplete="off">
+      </form>
     </div>
   </div>
 
@@ -74,6 +79,23 @@
         <label>Ports <input id="run-ports" type="text" placeholder="host:container, comma-separated e.g. 8080:80"></label>
         <label>Env <input id="run-env" type="text" placeholder="KEY=val, comma-separated"></label>
         <button type="submit" class="btn primary">Start</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Exec-in-container dialog -->
+  <div id="exec-overlay" class="overlay hidden">
+    <div class="overlay-box small">
+      <div class="overlay-head">
+        <span id="exec-title">Run script</span>
+        <button id="exec-close" class="btn">✕</button>
+      </div>
+      <form id="exec-form" class="run-form">
+        <label>Script
+          <textarea id="exec-cmd" rows="5" placeholder="e.g. php artisan migrate" spellcheck="false" required></textarea>
+        </label>
+        <p class="form-hint">Runs with <code>sh -c</code> inside the container; output streams to the log overlay.</p>
+        <button type="submit" class="btn primary">Run</button>
       </form>
     </div>
   </div>

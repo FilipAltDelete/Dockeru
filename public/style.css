@@ -248,16 +248,32 @@ a.badge:hover { color: var(--text); border-color: var(--accent); }
   color: #b6c2cf;
 }
 
+.overlay-exec {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 1rem;
+  border-top: 1px solid var(--border);
+  font-family: "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.8rem;
+}
+.overlay-exec .prompt { color: var(--accent); font-weight: 600; }
+.overlay-exec input { flex: 1; background: none; border: none; color: var(--text); font: inherit; }
+.overlay-exec input:focus { outline: none; }
+.overlay-exec input:disabled { opacity: 0.5; }
+.overlay-exec.hidden { display: none; }
+
 .run-form { display: flex; flex-direction: column; gap: 0.8rem; padding: 1.1rem; }
 .run-form label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.83rem; color: var(--muted); }
-.run-form input {
+.run-form input, .run-form textarea {
   padding: 0.5rem 0.7rem;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
 }
-.run-form input:focus { outline: none; border-color: var(--accent); }
+.run-form textarea { font-family: ui-monospace, monospace; font-size: 0.82rem; resize: vertical; }
+.run-form input:focus, .run-form textarea:focus { outline: none; border-color: var(--accent); }
 .run-form input[readonly] { opacity: 0.7; }
 
 .toast {

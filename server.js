@@ -65,6 +65,29 @@ app.get('/api/containers/:id/logs', async (req, res) => {
   }
 });
 
+// Run a script inside a running container with `docker exec sh -c <cmd>`,
+// streaming output via SSE ({line}/{done}/{error}, like compose up).
+app.get('/api/containers/:id/exec', (req, res) => {
+  const cmd = String(req.query.cmd || '').trim();
+  if (!cmd) return res.status(400).end('cmd is required');
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.write(`data: ${JSON.stringify({ line: `$ ${cmd}` })}\n\n`);
+  const proc = spawn('docker', ['exec', req.params.id, 'sh', '-c', cmd]);
+  const forward = chunk => {
+    for (const line of chunk.toString('utf8').split('\n')) {
+      if (line.trim()) res.write(`data: ${JSON.stringify({ line })}\n\n`);
+    }
+  };
+  proc.stdout.on('data', forward);
+  proc.stderr.on('data', forward);
+  proc.on('close', code => {
+    res.write(`data: ${JSON.stringify(code === 0 ? { done: true } : { error: `exited with code ${code}` })}\n\n`);
+    res.end();
+  });
+  req.on('close', () => proc.kill());
+});
+
 app.post('/api/containers/run', async (req, res) => {
   const { image, name, ports, env } = req.body;
   if (!image) return res.status(400).json({ error: 'image is required' });

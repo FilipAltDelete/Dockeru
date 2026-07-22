@@ -64,6 +64,12 @@ function fmtSize(bytes) {
 // Streams an SSE endpoint into the log overlay. Returns when the stream ends.
 function streamToOverlay(url, title) {
   showOverlay(title, '');
+  return streamInto(url);
+}
+
+// Append an SSE stream ({line}/{done}/{error}) to the already-open overlay,
+// so exec-console runs can share one view.
+function streamInto(url) {
   const body = $('#overlay-body');
   return new Promise(resolve => {
     const es = new EventSource(url);
@@ -92,9 +98,15 @@ function streamToOverlay(url, title) {
 function showOverlay(title, content) {
   $('#overlay-title').textContent = title;
   $('#overlay-body').textContent = content;
+  // Overlays other than the exec console don't get the "$" prompt row
+  execConsole = null;
+  $('#overlay-exec').classList.add('hidden');
   $('#overlay').classList.remove('hidden');
 }
-$('#overlay-close').onclick = () => $('#overlay').classList.add('hidden');
+$('#overlay-close').onclick = () => {
+  execConsole = null;
+  $('#overlay').classList.add('hidden');
+};
 $('#run-close').onclick = () => $('#run-overlay').classList.add('hidden');
 
 // ---------- tabs ----------
@@ -136,7 +148,8 @@ function containerCard(c) {
         <div class="card-actions">
           ${c.state === 'running'
             ? `<button class="btn small" data-act="stop" data-id="${c.id}">Stop</button>
-               <button class="btn small" data-act="restart" data-id="${c.id}">Restart</button>`
+               <button class="btn small" data-act="restart" data-id="${c.id}">Restart</button>
+               <button class="btn small" data-act="exec" data-id="${c.id}" data-name="${esc(c.name)}" title="Run a script inside the container">&gt;_</button>`
             : `<button class="btn small primary" data-act="start" data-id="${c.id}">Start</button>`}
           <button class="btn small" data-act="logs" data-id="${c.id}" data-name="${esc(c.name)}">Logs</button>
           <button class="btn small danger" data-act="remove" data-id="${c.id}" data-name="${esc(c.name)}">✕</button>
@@ -325,6 +338,7 @@ $('#containers-list').onclick = async e => {
       showOverlay(`Logs — ${name}`, await res.text() || '(no output)');
       return;
     }
+    if (act === 'exec') return openExecDialog(id, name);
     if (act === 'remove' && !confirm(`Remove container "${name}"?`)) return;
     btn.disabled = true;
     if (act === 'remove') {
@@ -364,6 +378,67 @@ enableDragReorder({
 $('#refresh-containers').onclick = loadContainers;
 $('#show-stopped').onchange = renderContainers;
 $('#only-root').onchange = renderContainers;
+
+// ---------- exec dialog ----------
+
+let execTarget = null;
+// Last script per container name, so reruns (migrate, clear cache, …) are
+// one click. Session-only on purpose — scripts can contain secrets.
+const lastExecCmd = {};
+
+function openExecDialog(id, name) {
+  execTarget = { id, name };
+  $('#exec-title').textContent = `Run script in ${name}`;
+  $('#exec-cmd').value = lastExecCmd[name] || '';
+  $('#exec-overlay').classList.remove('hidden');
+  $('#exec-cmd').focus();
+}
+
+$('#exec-close').onclick = () => $('#exec-overlay').classList.add('hidden');
+
+// ⏎ submits, shift-⏎ makes a newline (it's a textarea for multi-line scripts)
+$('#exec-cmd').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('#exec-form').requestSubmit();
+  }
+};
+
+$('#exec-form').onsubmit = e => {
+  e.preventDefault();
+  const cmd = $('#exec-cmd').value.trim();
+  if (!cmd || !execTarget) return;
+  $('#exec-overlay').classList.add('hidden');
+  showOverlay(`Console — ${execTarget.name}`, '');
+  execConsole = execTarget;                       // after showOverlay: it resets the console
+  $('#overlay-exec').classList.remove('hidden');
+  runInConsole(cmd);
+};
+
+// The overlay's "$" prompt row: run further scripts in the same container,
+// output appended to the same view.
+let execConsole = null;
+
+function runInConsole(cmd) {
+  const { id, name } = execConsole;
+  lastExecCmd[name] = cmd;
+  const input = $('#overlay-exec-cmd');
+  input.disabled = true;
+  streamInto(`/api/containers/${id}/exec?cmd=${encodeURIComponent(cmd)}`).then(() => {
+    input.disabled = false;
+    if (execConsole) input.focus();
+  });
+}
+
+$('#overlay-exec').onsubmit = e => {
+  e.preventDefault();
+  const input = $('#overlay-exec-cmd');
+  const cmd = input.value.trim();
+  if (!cmd || !execConsole || input.disabled) return;
+  input.value = '';
+  $('#overlay-body').textContent += '\n';
+  runInConsole(cmd);
+};
 
 // ---------- run dialog ----------
 
