@@ -1,0 +1,23 @@
+{
+  "name": "dockeru",
+  "version": "1.0.0",
+  "description": "Minimal web UI to manage Docker containers, images, and git-repo builds",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "app": "./electron/launch.sh"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dockerode": "^5.0.1",
+    "express": "^5.2.1"
+  },
+  "bin": {
+    "dockeru": "./cli.js"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11"
+  }
+}

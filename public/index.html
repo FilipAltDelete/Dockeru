@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dockeru</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🐳 dockeru</h1>
+    <nav>
+      <button class="tab active" data-tab="containers">Containers</button>
+      <button class="tab" data-tab="images">Images</button>
+      <button class="tab" data-tab="repos">Repositories</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Containers -->
+    <section id="tab-containers" class="panel active">
+      <div class="toolbar">
+        <button id="refresh-containers" class="btn">↻ Refresh</button>
+        <label class="toggle"><input type="checkbox" id="show-stopped" checked> show stopped</label>
+      </div>
+      <div id="containers-list" class="card-list"></div>
+    </section>
+
+    <!-- Images -->
+    <section id="tab-images" class="panel">
+      <div class="toolbar">
+        <input id="pull-input" type="text" placeholder="image to pull, e.g. nginx:alpine">
+        <button id="pull-btn" class="btn primary">Pull</button>
+        <button id="refresh-images" class="btn">↻ Refresh</button>
+      </div>
+      <div id="images-list" class="card-list"></div>
+    </section>
+
+    <!-- Repositories -->
+    <section id="tab-repos" class="panel">
+      <form id="repo-form" class="toolbar">
+        <input id="repo-name" type="text" placeholder="name (becomes image tag)" required>
+        <input id="repo-url" type="text" placeholder="git URL, e.g. https://github.com/user/app.git" required>
+        <input id="repo-dockerfile" type="text" placeholder="Dockerfile (optional)">
+        <button type="submit" class="btn primary">Connect</button>
+      </form>
+      <div id="repos-list" class="card-list"></div>
+    </section>
+  </main>
+
+  <!-- Log / output overlay -->
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-box">
+      <div class="overlay-head">
+        <span id="overlay-title"></span>
+        <button id="overlay-close" class="btn">✕</button>
+      </div>
+      <pre id="overlay-body"></pre>
+    </div>
+  </div>
+
+  <!-- Run container dialog -->
+  <div id="run-overlay" class="overlay hidden">
+    <div class="overlay-box small">
+      <div class="overlay-head">
+        <span>Run container</span>
+        <button id="run-close" class="btn">✕</button>
+      </div>
+      <form id="run-form" class="run-form">
+        <label>Image <input id="run-image" type="text" readonly></label>
+        <label>Name <input id="run-name" type="text" placeholder="optional"></label>
+        <label>Ports <input id="run-ports" type="text" placeholder="host:container, comma-separated e.g. 8080:80"></label>
+        <label>Env <input id="run-env" type="text" placeholder="KEY=val, comma-separated"></label>
+        <button type="submit" class="btn primary">Start</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
