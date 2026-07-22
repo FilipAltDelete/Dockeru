@@ -2,6 +2,7 @@
 // storage, compose-project discovery, and the enriched container listing.
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const Docker = require('dockerode');
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -219,6 +220,10 @@ async function listContainers() {
       group,
       parent,
       inRoot,
+      service: labels['com.docker.compose.service'] || null,
+      // label format: "php:service_started:false,db:service_healthy:true"
+      dependsOn: (labels['com.docker.compose.depends_on'] || '')
+        .split(',').map(s => s.split(':')[0]).filter(Boolean),
       id: c.Id,
       shortId: c.Id.slice(0, 12),
       name: (c.Names[0] || '').replace(/^\//, ''),
@@ -233,11 +238,58 @@ async function listContainers() {
   });
 }
 
+// First published host port of a container, as reported by listContainers()
+// (ports look like "8080→80"). null when nothing is published.
+function containerUrl(c) {
+  const port = (c.ports || []).map(p => parseInt(p, 10)).filter(Boolean).sort((a, b) => a - b)[0];
+  return port ? `http://localhost:${port}` : null;
+}
+
+// Open a URL in the system's default browser (CLI/terminal-UI side; the
+// Electron app goes through shell.openExternal instead).
+function openInBrowser(url) {
+  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
+    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : ['xdg-open', [url]];
+  spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+}
+
+// Split containers into start waves honouring compose depends_on: each wave
+// only depends on containers in earlier waves (or ones already running), so
+// e.g. nginx doesn't come up before php's DNS name exists and die.
+// Mirrored in public/app.js (the browser can't require this file).
+function startWaves(containers) {
+  const byKey = new Map();
+  for (const c of containers) if (c.service) byKey.set(`${c.group}/${c.service}`, c);
+  const depth = new Map();
+  const calc = (c, stack) => {
+    const key = `${c.group}/${c.service}`;
+    if (depth.has(key)) return depth.get(key);
+    if (stack.has(key)) return 0; // dependency cycle — don't recurse forever
+    stack.add(key);
+    let d = 0;
+    for (const s of c.dependsOn || []) {
+      const dep = byKey.get(`${c.group}/${s}`);
+      if (dep) d = Math.max(d, calc(dep, stack) + 1);
+    }
+    stack.delete(key);
+    depth.set(key, d);
+    return d;
+  };
+  const waves = [];
+  for (const c of containers) {
+    const d = c.service ? calc(c, new Set()) : 0;
+    (waves[d] = waves[d] || []).push(c);
+  }
+  return waves.filter(Boolean);
+}
+
 module.exports = {
   docker, DEFAULT_REPO_ROOT,
   getRepoRoot, setRepoRoot,
   loadRepos, saveRepos, moveRepo, reorderRepos,
   groupComparator, getGroupOrder, setGroupOrder, moveGroup,
   composeFileIn, findComposeProjects,
-  listContainers,
+  listContainers, startWaves,
+  containerUrl, openInBrowser,
 };

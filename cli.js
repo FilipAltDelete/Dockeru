@@ -4,7 +4,8 @@ const { spawn } = require('child_process');
 const {
   docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
   loadRepos, saveRepos, moveRepo, groupComparator, moveGroup,
-  findComposeProjects, listContainers,
+  findComposeProjects, listContainers, startWaves,
+  containerUrl, openInBrowser,
 } = require('./lib');
 
 const CODES = {
@@ -123,20 +124,24 @@ async function cmdAction(action, name) {
   if (await applyAction(action, targets)) process.exit(1);
 }
 
-// Run a container action on all targets in parallel, print per-container
-// results, return the number of failures.
+// Run a container action on all targets, print per-container results, return
+// the number of failures. start/restart run in compose depends_on waves
+// (parallel within a wave) so e.g. nginx doesn't come up before php exists.
 async function applyAction(action, targets) {
-  const results = await Promise.allSettled(
-    targets.map(c => docker.getContainer(c.id)[action]()));
+  const waves = action === 'start' || action === 'restart' ? startWaves(targets) : [targets];
   let failed = 0;
-  results.forEach((r, i) => {
-    if (r.status === 'fulfilled') {
-      console.log(`${col('green', '✓')} ${action} ${targets[i].name}`);
-    } else {
-      failed++;
-      console.log(`${col('red', '✗')} ${action} ${targets[i].name}\n  ${col('red', r.reason.message.trim())}`);
-    }
-  });
+  for (const wave of waves) {
+    const results = await Promise.allSettled(
+      wave.map(c => docker.getContainer(c.id)[action]()));
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        console.log(`${col('green', '✓')} ${action} ${wave[i].name}`);
+      } else {
+        failed++;
+        console.log(`${col('red', '✗')} ${action} ${wave[i].name}\n  ${col('red', r.reason.message.trim())}`);
+      }
+    });
+  }
   return failed;
 }
 
@@ -186,6 +191,26 @@ async function cmdSwitch(name) {
     await cmdCompose('up', name);
   }
   if (failed) process.exit(1);
+}
+
+// ---------- open ----------
+
+// Open the environment's URL (first published host port) in the default
+// browser. On a master/project, the first running container with a port wins.
+async function cmdOpen(name) {
+  if (!name) die('usage: dockeru open <master|project|container>');
+  const cs = await listContainers();
+  let targets = cs.filter(c => c.parent === name);
+  if (!targets.length) targets = cs.filter(c => c.group === name);
+  if (!targets.length) targets = cs.filter(c => c.name === name || c.id.startsWith(name));
+  if (!targets.length) die(`nothing matches "${name}"`);
+  const running = targets.filter(c => c.state === 'running');
+  if (!running.length) die(`"${name}" is not running — start it first`);
+  const c = running.find(c => containerUrl(c));
+  if (!c) die(`"${name}" has no published ports`);
+  const url = containerUrl(c);
+  openInBrowser(url);
+  console.log(`${col('green', '✓')} opened ${url} ${col('dim', `(${c.name})`)}`);
 }
 
 // ---------- up / down ----------
@@ -320,6 +345,7 @@ ${col('bold', 'Containers')}
   dockeru switch <master|project|container>   stop everything else, start the target
   dockeru move <master|project> <up|down|top|bottom|position>   reorder the ps/ui list
   dockeru kill [-f]                  stop ALL running containers (-f: SIGKILL)
+  dockeru open <master|project|container>     open its URL in the default browser
   dockeru logs <container> [-f]      last 300 log lines (-f: follow)
   dockeru run <image> [docker run args…]   e.g. dockeru run nginx:alpine -p 8080:80
 
@@ -356,6 +382,7 @@ ${col('bold', 'Connected repositories')}
     case 'start': case 'stop': case 'restart': await cmdAction(cmd, args[0]); break;
     case 'up': case 'down': await cmdCompose(cmd, args[0]); break;
     case 'switch': await cmdSwitch(args[0]); break;
+    case 'open': await cmdOpen(args[0]); break;
     case 'move': await cmdMove(args); break;
     case 'kill': await cmdKill(args); break;
     case 'logs': {

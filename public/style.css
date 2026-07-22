@@ -197,6 +197,8 @@ body.drag-select-off { user-select: none; }
   color: var(--muted);
   margin-left: 0.4rem;
 }
+a.badge { text-decoration: none; }
+a.badge:hover { color: var(--text); border-color: var(--accent); }
 
 .empty { color: var(--muted); text-align: center; padding: 2.5rem; font-size: 0.9rem; }
 .empty-note { color: var(--muted); font-size: 0.83rem; padding: 0.4rem 0.5rem 0.5rem; }

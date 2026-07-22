@@ -2,7 +2,7 @@
 // container tree as `dockeru ps`; arrows move, enter toggles start/stop.
 // Plain ANSI + raw stdin, no dependencies (matches the no-framework rule).
 const { spawn } = require('child_process');
-const { docker, findComposeProjects, listContainers, groupComparator } = require('./lib');
+const { docker, findComposeProjects, listContainers, groupComparator, startWaves, containerUrl, openInBrowser } = require('./lib');
 
 const C = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', inv: '\x1b[7m',
@@ -144,7 +144,7 @@ function render() {
   if (busy) status = C.yellow + ' ' + busy + C.reset;
   else if (msg) status = (msg.ok ? C.green + ' ✓ ' : C.red + ' ✗ ') + msg.text.replace(/\s+/g, ' ').slice(0, width - 4) + C.reset;
   out.push('\x1b[2K' + status + '\r\n');
-  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · a all · q quit' + C.reset);
+  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · o open · a all · q quit' + C.reset);
   process.stdout.write(out.join(''));
 }
 
@@ -194,8 +194,13 @@ async function containerAction(action, targets) {
   if (!targets.length) { msg = { ok: false, text: `nothing to ${action}` }; return render(); }
   busy = `${action} ${targets.length === 1 ? targets[0].name : targets.length + ' containers'}…`;
   render();
-  const results = await Promise.allSettled(targets.map(c => docker.getContainer(c.id)[action]()));
-  const failed = results.find(r => r.status === 'rejected');
+  // start/restart in depends_on order so e.g. nginx finds php's DNS name
+  const waves = action === 'stop' ? [targets] : startWaves(targets);
+  let failed = null;
+  for (const wave of waves) {
+    const results = await Promise.allSettled(wave.map(c => docker.getContainer(c.id)[action]()));
+    failed = failed || results.find(r => r.status === 'rejected');
+  }
   msg = failed
     ? { ok: false, text: `${action}: ${failed.reason.message.trim()}` }
     : { ok: true, text: `${action} ${targets.map(c => c.name).join(', ')}` };
@@ -262,6 +267,17 @@ async function doSwitch(r) {
   const toStart = targets.filter(c => c.state !== 'running');
   if (toStart.length) return containerAction('start', toStart);
   if (!targets.length) return composeRun('up', composeTargets(r));
+}
+
+// Open the environment in the default browser: the selected container's first
+// published port, or — on a group — the first running container that has one.
+function openBrowser(r) {
+  const candidates = r.type === 'container' ? [r.c]
+    : r.items.filter(c => c.state === 'running');
+  const url = candidates.map(containerUrl).find(Boolean);
+  if (!url) msg = { ok: false, text: 'no published ports to open' };
+  else { openInBrowser(url); msg = { ok: true, text: `opened ${url}` }; }
+  render();
 }
 
 async function showLogs(r) {
@@ -333,6 +349,7 @@ function onKey(buf) {
   else if (s === 'u') { expandTree(r); composeRun('up', composeTargets(r)); }
   else if (s === 'd') composeRun('down', composeTargets(r));
   else if (s === 'l') showLogs(r);
+  else if (s === 'o') openBrowser(r);
   else if (s === 'a') { showAll = !showAll; rebuild(); }
 }
 

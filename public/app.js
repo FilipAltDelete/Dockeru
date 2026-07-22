@@ -27,6 +27,34 @@ function esc(s) {
   }[c]));
 }
 
+// Split containers into start waves honouring compose depends_on — each wave
+// only depends on earlier waves. Mirrors startWaves() in lib.js.
+function startWaves(containers) {
+  const byKey = new Map();
+  for (const c of containers) if (c.service) byKey.set(`${c.group}/${c.service}`, c);
+  const depth = new Map();
+  const calc = (c, stack) => {
+    const key = `${c.group}/${c.service}`;
+    if (depth.has(key)) return depth.get(key);
+    if (stack.has(key)) return 0; // dependency cycle — don't recurse forever
+    stack.add(key);
+    let d = 0;
+    for (const s of c.dependsOn || []) {
+      const dep = byKey.get(`${c.group}/${s}`);
+      if (dep) d = Math.max(d, calc(dep, stack) + 1);
+    }
+    stack.delete(key);
+    depth.set(key, d);
+    return d;
+  };
+  const waves = [];
+  for (const c of containers) {
+    const d = c.service ? calc(c, new Set()) : 0;
+    (waves[d] = waves[d] || []).push(c);
+  }
+  return waves.filter(Boolean);
+}
+
 function fmtSize(bytes) {
   if (bytes > 1e9) return (bytes / 1e9).toFixed(2) + ' GB';
   if (bytes > 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
@@ -96,7 +124,12 @@ function containerCard(c) {
         <span class="dot ${esc(c.state)}"></span>
         <div class="card-info">
           <div class="card-title">${esc(c.name)}
-            ${c.ports.map(p => `<span class="badge">${esc(p)}</span>`).join('')}
+            ${c.ports.map(p => {
+              const port = parseInt(p, 10); // "8080→80" → host port 8080
+              return port
+                ? `<a class="badge" href="http://localhost:${port}" target="_blank" rel="noopener" title="Open http://localhost:${port}">${esc(p)}</a>`
+                : `<span class="badge">${esc(p)}</span>`;
+            }).join('')}
           </div>
           <div class="card-sub">${esc(c.image)} · ${esc(c.status)} · ${esc(c.shortId)}</div>
         </div>
@@ -254,11 +287,17 @@ $('#containers-list').onclick = async e => {
       (master !== undefined ? c.parent === master : c.group === group) &&
       (gact === 'start' ? c.state !== 'running' : c.state === 'running'));
     gbtn.disabled = true;
-    const results = await Promise.allSettled(targets.map(c =>
-      api(`/api/containers/${c.id}/${gact}`, { method: 'POST' })));
-    const failures = results
-      .map((r, i) => r.status === 'rejected' ? { name: targets[i].name, err: r.reason.message } : null)
-      .filter(Boolean);
+    // start in compose depends_on order so e.g. nginx finds php's DNS name;
+    // mirrors startWaves() in lib.js
+    const waves = gact === 'stop' ? [targets] : startWaves(targets);
+    const failures = [];
+    for (const wave of waves) {
+      const results = await Promise.allSettled(wave.map(c =>
+        api(`/api/containers/${c.id}/${gact}`, { method: 'POST' })));
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') failures.push({ name: wave[i].name, err: r.reason.message });
+      });
+    }
     if (failures.length) {
       showOverlay(`${scope}: ${failures.length} container(s) failed to ${gact}`,
         failures.map(f => `✗ ${f.name}\n\n${f.err}`).join('\n\n────────\n\n'));
