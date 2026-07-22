@@ -35,8 +35,8 @@ commands; highlights:
 
 ```bash
 dockeru ps               # grouped container list (same bundling as the UI)
-dockeru start swedsnus   # start a master folder, project, or single container
-dockeru up swedsnus-test # docker compose up -d in the project dir
+dockeru start repo   # start a master folder, project, or single container
+dockeru up repo # docker compose up -d in the project dir
 dockeru logs <name> -f   # follow logs
 dockeru repos add app https://github.com/user/app.git && dockeru build app
 ```
