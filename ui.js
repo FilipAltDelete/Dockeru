@@ -20,6 +20,7 @@ let busy = null;              // status text while an action runs (input ignored
 let msg = null;               // { ok, text } from the last action
 let child = null;             // spawned docker process (compose / logs)
 let logView = null;           // { name, lines, buf, scroll, follow, ended } while viewing logs
+let explorer = null;          // { c, path, entries, sel, scroll, err, file } while browsing files
 let inScreen = false;         // alternate screen active → safe to render
 let timer = null;
 
@@ -123,7 +124,7 @@ function rowLine(r, isSel, width) {
 }
 
 function render() {
-  if (!inScreen || logView) return;
+  if (!inScreen || logView || explorer) return;
   const width = process.stdout.columns || 80;
   const height = process.stdout.rows || 24;
   const bodyH = Math.max(1, height - 3); // title + status + help
@@ -144,7 +145,7 @@ function render() {
   if (busy) status = C.yellow + ' ' + busy + C.reset;
   else if (msg) status = (msg.ok ? C.green + ' ✓ ' : C.red + ' ✗ ') + msg.text.replace(/\s+/g, ' ').slice(0, width - 4) + C.reset;
   out.push('\x1b[2K' + status + '\r\n');
-  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · o open · a all · q quit' + C.reset);
+  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · e files · o open · a all · q quit' + C.reset);
   process.stdout.write(out.join(''));
 }
 
@@ -294,6 +295,184 @@ async function showLogs(r) {
   else { busy = null; msg = null; await refresh(); }   // user quit the viewer
 }
 
+// ---------- file explorer ----------
+// IDE-like read-only browser for a running container's filesystem: directory
+// tree navigation plus a file viewer with line numbers. Everything goes
+// through `docker exec sh -c`, so it works with whatever the image ships.
+
+const FILE_LIMIT = 500000; // bytes of a file to load (head -c)
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+
+function dockerExec(id, cmd) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('docker', ['exec', id, 'sh', '-c', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    p.stdout.on('data', d => (out += d));
+    p.stderr.on('data', d => (err += d));
+    p.on('close', code => (code === 0 ? resolve(out) : reject(new Error(err.trim() || `exit code ${code}`))));
+  });
+}
+
+const joinPath = (dir, name) => (dir === '/' ? '' : dir.replace(/\/$/, '')) + '/' + name;
+
+async function openExplorer(r) {
+  if (r.type !== 'container') { msg = { ok: false, text: 'select a container to browse its files' }; return render(); }
+  if (r.c.state !== 'running') { msg = { ok: false, text: `${r.c.name} must be running to browse its files` }; return render(); }
+  busy = 'files'; // pauses the periodic tree refresh while the explorer is open
+  explorer = { c: r.c, path: '/', entries: [], sel: 0, scroll: 0, err: null, file: null };
+  // start where the image's WorkingDir points (exec's cwd), usually the app code
+  try { explorer.path = (await dockerExec(r.c.id, 'pwd')).trim() || '/'; } catch {}
+  await loadDir();
+}
+
+// List the current directory (dirs first). selectName re-selects a child
+// after navigating up, so ← doesn't lose your place.
+async function loadDir(selectName) {
+  const ex = explorer;
+  if (!ex) return;
+  try {
+    const names = (await dockerExec(ex.c.id, `ls -1Ap ${shq(ex.path)}`)).split('\n').filter(Boolean);
+    if (explorer !== ex) return; // user quit while loading
+    ex.entries = [
+      ...names.filter(n => n.endsWith('/')).sort(),
+      ...names.filter(n => !n.endsWith('/')).sort(),
+    ];
+    ex.err = null;
+  } catch (err) {
+    if (explorer !== ex) return;
+    ex.entries = [];
+    ex.err = err.message.replace(/\s+/g, ' ');
+  }
+  ex.sel = Math.max(0, selectName ? ex.entries.indexOf(selectName) : 0);
+  ex.scroll = 0;
+  renderExplorer();
+}
+
+async function openFile(name) {
+  const ex = explorer;
+  const full = joinPath(ex.path, name);
+  let text, truncated = false;
+  try {
+    // symlinked directories aren't marked by ls -p — descend instead of cat'ing
+    // ([ -d ] is the only portable test: busybox says "I/O error", GNU differs)
+    if ((await dockerExec(ex.c.id, `[ -d ${shq(full)} ] && echo 1 || echo 0`)).trim() === '1') {
+      if (explorer !== ex) return;
+      ex.path = full;
+      return loadDir();
+    }
+    // `< file` instead of an argument: immune to weird names, same in busybox
+    text = await dockerExec(ex.c.id, `head -c ${FILE_LIMIT} < ${shq(full)}`);
+    truncated = text.length >= FILE_LIMIT;
+  } catch (err) {
+    if (explorer !== ex) return;
+    text = '✗ ' + err.message;
+  }
+  if (explorer !== ex) return;
+  const lines = text
+    .replace(/\r\n?/g, '\n').replace(/\t/g, '    ')
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '·') // binary junk → visible dots
+    .split('\n');
+  ex.file = { name, lines, scroll: 0, truncated };
+  renderExplorer();
+}
+
+function renderExplorer() {
+  if (!inScreen || !explorer) return;
+  const ex = explorer;
+  const width = process.stdout.columns || 80;
+  const height = process.stdout.rows || 24;
+  const bodyH = Math.max(1, height - 2); // title + help
+  const out = ['\x1b[H'];
+
+  if (ex.file) {
+    const f = ex.file;
+    f.scroll = Math.max(0, Math.min(f.scroll, Math.max(0, f.lines.length - bodyH)));
+    const pos = `${Math.min(f.scroll + bodyH, f.lines.length)}/${f.lines.length}`;
+    out.push('\x1b[2K' + C.bold + C.cyan + ' ' + ex.c.name + C.reset
+      + ' ' + joinPath(ex.path, f.name)
+      + C.dim + `  ${pos}${f.truncated ? ' · truncated' : ''}` + C.reset + '\r\n');
+    const nw = Math.max(4, String(f.lines.length).length);
+    for (let i = 0; i < bodyH; i++) {
+      const n = f.scroll + i;
+      const l = f.lines[n];
+      out.push('\x1b[2K' + (l === undefined ? ''
+        : C.dim + String(n + 1).padStart(nw) + C.reset + ' ' + l.slice(0, width - nw - 1)) + '\r\n');
+    }
+    out.push('\x1b[2K' + C.dim + ' ↑↓ scroll · PgUp/PgDn page · g/G top/end · ←/q back' + C.reset);
+    return void process.stdout.write(out.join(''));
+  }
+
+  ex.sel = Math.max(0, Math.min(ex.sel, ex.entries.length - 1));
+  if (ex.sel < ex.scroll) ex.scroll = ex.sel;
+  if (ex.sel >= ex.scroll + bodyH) ex.scroll = ex.sel - bodyH + 1;
+  ex.scroll = Math.max(0, Math.min(ex.scroll, Math.max(0, ex.entries.length - bodyH)));
+  out.push('\x1b[2K' + C.bold + C.cyan + ' files ' + ex.c.name + C.reset + C.dim + '  ' + ex.path + C.reset + '\r\n');
+  for (let i = 0; i < bodyH; i++) {
+    const n = ex.scroll + i;
+    const name = ex.entries[n];
+    let line = '';
+    if (name !== undefined) {
+      const isDir = name.endsWith('/');
+      const text = ` ${isDir ? '📁 ' : '   '}${name}`;
+      line = n === ex.sel
+        ? C.inv + C.bold + text.slice(0, width) + ' '.repeat(Math.max(0, width - text.length)) + C.reset
+        : (isDir ? C.cyan + text + C.reset : text);
+    } else if (n === 0 && ex.err) {
+      line = ' ' + C.red + '✗ ' + ex.err.slice(0, width - 4) + C.reset;
+    } else if (n === 0 && !ex.entries.length) {
+      line = ' ' + C.dim + '(empty directory)' + C.reset;
+    }
+    out.push('\x1b[2K' + line + '\r\n');
+  }
+  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ⏎ open · ← up · g/G top/end · q back' + C.reset);
+  process.stdout.write(out.join(''));
+}
+
+function closeExplorer() {
+  explorer = null;
+  busy = null;
+  msg = null;
+  refresh();
+}
+
+function onExplorerKey(s) {
+  const ex = explorer;
+  const bodyH = Math.max(1, (process.stdout.rows || 24) - 2);
+  if (ex.file) {
+    const f = ex.file;
+    if (s === 'q' || s === '\x1b' || s === '\x03' || s === '\x1b[D') { ex.file = null; return renderExplorer(); }
+    if (s === '\x1b[A' || s === 'k') f.scroll--;
+    else if (s === '\x1b[B' || s === 'j') f.scroll++;
+    else if (s === '\x1b[5~') f.scroll -= bodyH;
+    else if (s === '\x1b[6~') f.scroll += bodyH;
+    else if (s === 'g') f.scroll = 0;
+    else if (s === 'G') f.scroll = Infinity;
+    else return;
+    return renderExplorer();
+  }
+  if (s === 'q' || s === '\x1b' || s === '\x03') return closeExplorer();
+  if (s === '\x1b[A' || s === 'k') ex.sel--;
+  else if (s === '\x1b[B' || s === 'j') ex.sel++;
+  else if (s === '\x1b[5~') ex.sel -= bodyH;
+  else if (s === '\x1b[6~') ex.sel += bodyH;
+  else if (s === 'g') ex.sel = 0;
+  else if (s === 'G') ex.sel = Infinity;
+  else if (s === '\x1b[D' || s === '\x7f') { // ← / backspace: up one directory
+    if (ex.path === '/') return;
+    const parts = ex.path.replace(/\/+$/, '').split('/');
+    const child = parts.pop();
+    ex.path = parts.join('/') || '/';
+    return loadDir(child + '/');
+  } else if (s === '\r' || s === '\n') {
+    const name = ex.entries[ex.sel];
+    if (name === undefined) return;
+    if (name.endsWith('/')) { ex.path = joinPath(ex.path, name.slice(0, -1)); return loadDir(); }
+    return openFile(name);
+  } else return;
+  renderExplorer();
+}
+
 // ---------- input ----------
 
 function fold(r, close) {
@@ -331,6 +510,7 @@ function onLogKey(s) {
 function onKey(buf) {
   const s = buf.toString();
   if (logView) return onLogKey(s);
+  if (explorer) return onExplorerKey(s);
   if (s === '\x03') {                  // Ctrl-C: kill the docker child if one
     if (child) return child.kill('SIGINT'); // is running (compose), otherwise quit
     return quit();
@@ -349,6 +529,7 @@ function onKey(buf) {
   else if (s === 'u') { expandTree(r); composeRun('up', composeTargets(r)); }
   else if (s === 'd') composeRun('down', composeTargets(r));
   else if (s === 'l') showLogs(r);
+  else if (s === 'e') openExplorer(r);
   else if (s === 'o') openBrowser(r);
   else if (s === 'a') { showAll = !showAll; rebuild(); }
 }
@@ -367,7 +548,7 @@ async function start() {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on('data', onKey);
-  process.stdout.on('resize', () => (logView ? renderLogs() : render()));
+  process.stdout.on('resize', () => (logView ? renderLogs() : explorer ? renderExplorer() : render()));
   process.on('SIGTERM', quit);
   enterScreen();
   render();
