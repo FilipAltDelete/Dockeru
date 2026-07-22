@@ -3,7 +3,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const {
   docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
-  loadRepos, saveRepos,
+  loadRepos, saveRepos, reorderRepos,
+  getGroupOrder, setGroupOrder,
   composeFileIn, findComposeProjects, listContainers,
 } = require('./lib');
 
@@ -173,7 +174,7 @@ app.get('/api/projects/up', (req, res) => {
 // ---------- Settings ----------
 
 app.get('/api/settings', (req, res) => {
-  res.json({ repoRoot: getRepoRoot(), defaultRepoRoot: DEFAULT_REPO_ROOT });
+  res.json({ repoRoot: getRepoRoot(), defaultRepoRoot: DEFAULT_REPO_ROOT, groupOrder: getGroupOrder() });
 });
 
 // Set the repo root scanned for compose projects; empty repoRoot reverts
@@ -182,6 +183,16 @@ app.put('/api/settings', (req, res) => {
   try {
     const repoRoot = setRepoRoot(req.body.repoRoot);
     res.json({ repoRoot, defaultRepoRoot: DEFAULT_REPO_ROOT });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Persist a new container-group order (drag & drop in the UI);
+// body: { order: [group names] }
+app.put('/api/groups/order', (req, res) => {
+  try {
+    res.json({ order: setGroupOrder(req.body.order) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -205,6 +216,15 @@ app.post('/api/repos', (req, res) => {
   repos.push(repo);
   saveRepos(repos);
   res.json(repo);
+});
+
+// Persist a new repo order (drag & drop in the UI); body: { order: [names] }
+app.put('/api/repos/order', (req, res) => {
+  try {
+    res.json(reorderRepos(req.body.order));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.delete('/api/repos/:name', (req, res) => {

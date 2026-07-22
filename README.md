@@ -64,10 +64,37 @@ dockeru root ~/projects  # set the repo folder (same setting as the web UI ⚙)
 dockeru repos add app https://github.com/user/app.git && dockeru build app
 ```
 
+### Reordering
+
+The order of the container groups (in `dockeru ps`, `dockeru ui`, and the web
+UI) and of the connected repositories is customizable. In the web/desktop UI,
+drag the `⠿` handle; from the CLI:
+
+```bash
+# Container groups (masters and standalone projects), as shown by `dockeru ps`
+dockeru move webshop top        # pin the webshop project first
+dockeru move backoffice up      # swap backoffice with the group above it
+dockeru move legacy bottom      # move the legacy master folder last
+dockeru move api 3              # put api at position 3 (1 = first)
+
+# Connected repositories, as shown by `dockeru repos`
+dockeru repos move app top      # list the app repo first
+dockeru repos move tools down   # swap tools with the repo below it
+```
+
+Both commands accept `up`, `down`, `top`, `bottom`, or a 1-based position
+(out-of-range positions clamp to the ends) and print the resulting order.
+The order is shared with the web/desktop UI — groups in `data/settings.json`,
+repos in `data/repos.json`. Groups you haven't ordered sort alphabetically
+after the ordered ones; the unnamed "Other containers" group always stays
+last.
+
 ## Features
 
 - **Containers** — list running and stopped containers, start / stop / restart /
   remove, view the last 300 log lines. The list auto-refreshes every 5 s.
+  Drag the `⠿` handle to reorder the groups (shared with the CLI, see
+  [Reordering](#reordering)).
 - **Images** — list local images, pull from Docker Hub or any registry
   (e.g. `nginx:alpine`, `ghcr.io/org/app:tag`) with live progress, remove,
   and run a container from an image (with optional name, port mappings
@@ -77,7 +104,8 @@ dockeru repos add app https://github.com/user/app.git && dockeru build app
   repo needs a Dockerfile) and tags the result `<name>:latest`, streaming the
   build output live. After a build you can launch containers from it.
   Private repos work with URLs that embed credentials or over ssh if the
-  daemon host has keys set up. Connected repos are stored in `data/repos.json`.
+  daemon host has keys set up. Connected repos are stored in `data/repos.json`
+  and can be reordered by dragging the `⠿` handle.
 
 ## Notes
 

@@ -112,17 +112,22 @@ function containerCard(c) {
 }
 
 let lastProjects = [];
+let groupOrder = [];
+let draggingGroup = false;
 const expanded = new Set(JSON.parse(localStorage.getItem('dockeru-expanded') || '[]'));
 
 async function loadContainers() {
+  if (draggingGroup) return;
   const list = $('#containers-list');
   try {
-    const [cs, projects] = await Promise.all([
+    const [cs, projects, settings] = await Promise.all([
       api('/api/containers'),
       api('/api/projects').catch(() => []),
+      api('/api/settings').catch(() => ({})),
     ]);
     lastContainers = cs;
     lastProjects = projects;
+    groupOrder = settings.groupOrder || [];
   } catch (err) {
     list.innerHTML = `<div class="empty">Error: ${esc(err.message)}</div>`;
     return;
@@ -148,13 +153,14 @@ function renderContainers() {
     }
     // Bundle by compose project, and bundle projects sharing a master folder
     const projectDirs = new Map(projects.map(p => [p.name, p.dir]));
-    const groupSection = (key, items) => {
+    const groupSection = (key, items, topLevel = false) => {
       const running = items.filter(c => c.state === 'running').length;
       const dir = projectDirs.get(key);
       const open = expanded.has('g:' + key);
       return `
-      <div class="group">
+      <div class="group"${topLevel && key ? ` data-gname="${esc(key)}"` : ''}>
         <div class="group-head clickable" data-toggle="g:${esc(key)}">
+          ${topLevel && key ? '<span class="drag-handle" title="Drag to reorder">⠿</span>' : ''}
           <span class="chev">${open ? '▾' : '▸'}</span>
           <span class="group-title">${key ? '📦 ' + esc(key) : 'Other containers'}</span>
           <span class="group-sub">${items.length ? `${running}/${items.length} running` : 'not created'}</span>
@@ -195,20 +201,25 @@ function renderContainers() {
         standalone.get(key).push(c);
       }
     }
+    // Saved drag & drop order first, then alphabetical; unnamed group last
+    const gidx = new Map(groupOrder.map((n, i) => [n, i]));
+    const rank = n => (gidx.has(n) ? gidx.get(n) : Infinity);
     const entries = [
       ...[...masters.keys()].map(name => ({ name, master: true })),
       ...[...standalone.keys()].map(name => ({ name, master: false })),
-    ].sort((a, b) => (a.name === '') - (b.name === '') || a.name.localeCompare(b.name));
+    ].sort((a, b) => (a.name === '') - (b.name === '')
+      || rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
 
     list.innerHTML = entries.map(e => {
-      if (!e.master) return groupSection(e.name, standalone.get(e.name));
+      if (!e.master) return groupSection(e.name, standalone.get(e.name), true);
       const projects = masters.get(e.name);
       const all = [...projects.values()].flat();
       const running = all.filter(c => c.state === 'running').length;
       const open = expanded.has('m:' + e.name);
       return `
-      <div class="master">
+      <div class="master" data-gname="${esc(e.name)}">
         <div class="group-head master-head clickable" data-toggle="m:${esc(e.name)}">
+          <span class="drag-handle" title="Drag to reorder">⠿</span>
           <span class="chev">${open ? '▾' : '▸'}</span>
           <span class="group-title">🗂️ ${esc(e.name)}</span>
           <span class="group-sub">${projects.size} projects · ${running}/${all.length} running</span>
@@ -223,6 +234,9 @@ function renderContainers() {
 }
 
 $('#containers-list').onclick = async e => {
+  // The drag handle sits inside a clickable group head — releasing a drag
+  // (or clicking the handle) must not toggle the fold.
+  if (e.target.closest('.drag-handle')) return;
   const ubtn = e.target.closest('button[data-up]');
   if (ubtn) {
     const ok = await streamToOverlay(
@@ -286,6 +300,27 @@ $('#containers-list').onclick = async e => {
     btn.disabled = false;
   }
 };
+
+// Reordering of top-level groups (masters and standalone projects). The
+// unnamed "Other containers" group has no data-gname and always stays last.
+enableDragReorder({
+  list: $('#containers-list'),
+  itemSel: '[data-gname]',
+  endSel: '.group:not([data-gname])',
+  onStart: () => { draggingGroup = true; },
+  onDrop: async (items, unchanged) => {
+    draggingGroup = false;
+    if (unchanged) return;
+    const order = items.map(el => el.dataset.gname);
+    groupOrder = order;
+    try {
+      await api('/api/groups/order', { method: 'PUT', body: JSON.stringify({ order }) });
+    } catch (err) {
+      toast(err.message, true);
+      loadContainers();
+    }
+  },
+});
 
 $('#refresh-containers').onclick = loadContainers;
 $('#show-stopped').onchange = renderContainers;
@@ -386,7 +421,8 @@ async function loadRepos() {
       return;
     }
     list.innerHTML = repos.map(r => `
-      <div class="card">
+      <div class="card" data-name="${esc(r.name)}">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <div class="card-info">
           <div class="card-title">${esc(r.name)}
             ${r.lastBuilt ? `<span class="badge">built ${new Date(r.lastBuilt).toLocaleString()}</span>` : '<span class="badge">never built</span>'}
@@ -422,6 +458,63 @@ $('#repo-form').onsubmit = async e => {
     toast(err.message, true);
   }
 };
+
+// Pointer-based drag-to-reorder on the ⠿ handles (the HTML5 drag-and-drop
+// API is unreliable in the Electron/Linux build). Move/up listeners go on
+// window — pointer capture on the handle itself is also flaky in Electron
+// on Linux/Wayland, and silently failing capture means no move events.
+// Items are direct children of `list` matching `itemSel`; the dragged item
+// is reinserted as the pointer crosses item midpoints. When dropped below
+// everything it lands before `endSel` (if given), keeping that entry last.
+function enableDragReorder({ list, itemSel, endSel, onStart, onDrop }) {
+  list.addEventListener('pointerdown', e => {
+    const handle = e.target.closest('.drag-handle');
+    if (!handle || e.button !== 0) return;
+    const item = handle.closest(itemSel);
+    if (!item || item.parentElement !== list) return;
+    e.preventDefault();
+    const order = () => [...list.children].filter(el => el.matches(itemSel));
+    const before = order();
+    item.classList.add('dragging');
+    document.body.classList.add('drag-select-off');
+    if (onStart) onStart();
+
+    const onMove = ev => {
+      const next = order().find(el => el !== item &&
+        ev.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
+      list.insertBefore(item, next || (endSel && list.querySelector(':scope > ' + endSel)) || null);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      item.classList.remove('dragging');
+      document.body.classList.remove('drag-select-off');
+      const after = order();
+      onDrop(after, after.every((el, i) => el === before[i]));
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+
+enableDragReorder({
+  list: $('#repos-list'),
+  itemSel: '.card[data-name]',
+  onDrop: async (items, unchanged) => {
+    if (unchanged) return;
+    try {
+      await api('/api/repos/order', {
+        method: 'PUT',
+        body: JSON.stringify({ order: items.map(el => el.dataset.name) }),
+      });
+    } catch (err) {
+      toast(err.message, true);
+      loadRepos();
+    }
+  },
+});
 
 $('#repos-list').onclick = async e => {
   const btn = e.target.closest('button[data-act]');

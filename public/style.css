@@ -158,6 +158,18 @@ main { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
   border-radius: 8px;
 }
 
+.drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none; /* required for pointer-event dragging */
+}
+.dragging .drag-handle { cursor: grabbing; }
+.dragging { opacity: 0.45; }
+/* no accidental text selection while a drag is in progress */
+body.drag-select-off { user-select: none; }
+
 .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .dot.exited, .dot.created { background: var(--muted); }

@@ -2,7 +2,7 @@
 // container tree as `dockeru ps`; arrows move, enter toggles start/stop.
 // Plain ANSI + raw stdin, no dependencies (matches the no-framework rule).
 const { spawn } = require('child_process');
-const { docker, findComposeProjects, listContainers } = require('./lib');
+const { docker, findComposeProjects, listContainers, groupComparator } = require('./lib');
 
 const C = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', inv: '\x1b[7m',
@@ -70,10 +70,11 @@ function rebuild() {
       for (const c of meta.items) rows.push({ key: 'c:' + c.id, type: 'container', c, indent: indent + 1 });
     }
   };
+  const cmp = groupComparator();
   const entries = [
     ...[...masters.keys()].map(name => ({ name, master: true })),
     ...[...standalone.keys()].map(name => ({ name, master: false })),
-  ].sort((a, b) => (a.name === '') - (b.name === '') || a.name.localeCompare(b.name));
+  ].sort((a, b) => cmp(a.name, b.name));
   for (const e of entries) {
     if (!e.master) { pushProject(e.name, standalone.get(e.name), null, 0); continue; }
     const inner = masters.get(e.name);

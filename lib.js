@@ -39,6 +39,47 @@ function saveRepos(repos) {
   fs.writeFileSync(REPOS_FILE, JSON.stringify(repos, null, 2));
 }
 
+// Resolve 'up'/'down'/'top'/'bottom' or a 1-based position to a clamped index.
+function resolveIndex(from, to, len) {
+  let idx;
+  if (to === 'up') idx = from - 1;
+  else if (to === 'down') idx = from + 1;
+  else if (to === 'top') idx = 0;
+  else if (to === 'bottom') idx = len - 1;
+  else {
+    idx = parseInt(to, 10) - 1;
+    if (Number.isNaN(idx)) throw new Error(`invalid position "${to}" (use up, down, top, bottom or a number)`);
+  }
+  return Math.max(0, Math.min(len - 1, idx));
+}
+
+// Move one connected repo within the list. `to` is 'up', 'down', 'top',
+// 'bottom', or a 1-based position; out-of-range positions clamp.
+function moveRepo(name, to) {
+  const repos = loadRepos();
+  const from = repos.findIndex(r => r.name === name);
+  if (from === -1) throw new Error(`no connected repository "${name}"`);
+  const [repo] = repos.splice(from, 1);
+  repos.splice(resolveIndex(from, to, repos.length + 1), 0, repo);
+  saveRepos(repos);
+  return repos;
+}
+
+// Replace the whole order; `orderedNames` must name every repo exactly once.
+function reorderRepos(orderedNames) {
+  const repos = loadRepos();
+  const byName = new Map(repos.map(r => [r.name, r]));
+  if (!Array.isArray(orderedNames)
+      || orderedNames.length !== repos.length
+      || new Set(orderedNames).size !== repos.length
+      || orderedNames.some(n => !byName.has(n))) {
+    throw new Error('order must list every connected repository exactly once');
+  }
+  const next = orderedNames.map(n => byName.get(n));
+  saveRepos(next);
+  return next;
+}
+
 function loadSettings() {
   return loadJson(SETTINGS_FILE, {});
 }
@@ -65,6 +106,50 @@ function setRepoRoot(dir) {
   settings.repoRoot = resolved;
   saveSettings(settings);
   return resolved;
+}
+
+// Comparator for top-level container groups (masters and standalone
+// projects): saved order first, then alphabetical; the unnamed group last.
+// Groups are discovered at runtime, so names missing from the saved order
+// simply sort after the ordered ones.
+function groupComparator() {
+  const order = loadSettings().groupOrder || [];
+  const idx = new Map(order.map((n, i) => [n, i]));
+  return (a, b) => {
+    if ((a === '') !== (b === '')) return a === '' ? 1 : -1;
+    const ia = idx.has(a) ? idx.get(a) : Infinity;
+    const ib = idx.has(b) ? idx.get(b) : Infinity;
+    return ia - ib || a.localeCompare(b);
+  };
+}
+
+function getGroupOrder() {
+  return loadSettings().groupOrder || [];
+}
+
+// Persist a display order for container groups (empty array clears it).
+function setGroupOrder(names) {
+  if (!Array.isArray(names) || names.some(n => typeof n !== 'string')) {
+    throw new Error('order must be an array of group names');
+  }
+  const settings = loadSettings();
+  const clean = [...new Set(names.filter(Boolean))];
+  if (clean.length) settings.groupOrder = clean;
+  else delete settings.groupOrder;
+  saveSettings(settings);
+  return clean;
+}
+
+// Move one group within the current display order. `allNames` is the full
+// list of top-level group names visible right now (the saved order can't be
+// used alone — groups appear and disappear with containers on disk).
+function moveGroup(name, to, allNames) {
+  const names = [...new Set(allNames.filter(Boolean))].sort(groupComparator());
+  const from = names.indexOf(name);
+  if (from === -1) throw new Error(`no master or project "${name}"`);
+  names.splice(from, 1);
+  names.splice(resolveIndex(from, to, names.length + 1), 0, name);
+  return setGroupOrder(names);
 }
 
 const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
@@ -151,7 +236,8 @@ async function listContainers() {
 module.exports = {
   docker, DEFAULT_REPO_ROOT,
   getRepoRoot, setRepoRoot,
-  loadRepos, saveRepos,
+  loadRepos, saveRepos, moveRepo, reorderRepos,
+  groupComparator, getGroupOrder, setGroupOrder, moveGroup,
   composeFileIn, findComposeProjects,
   listContainers,
 };

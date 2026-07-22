@@ -3,7 +3,8 @@
 const { spawn } = require('child_process');
 const {
   docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
-  loadRepos, saveRepos, findComposeProjects, listContainers,
+  loadRepos, saveRepos, moveRepo, groupComparator, moveGroup,
+  findComposeProjects, listContainers,
 } = require('./lib');
 
 const CODES = {
@@ -78,10 +79,11 @@ async function cmdPs(args) {
     }
   };
 
+  const cmp = groupComparator();
   const entries = [
     ...[...masters.keys()].map(name => ({ name, master: true })),
     ...[...standalone.keys()].map(name => ({ name, master: false })),
-  ].sort((a, b) => (a.name === '') - (b.name === '') || a.name.localeCompare(b.name));
+  ].sort((a, b) => cmp(a.name, b.name));
 
   for (const e of entries) {
     if (!e.master) {
@@ -201,6 +203,25 @@ async function cmdCompose(sub, name) {
   }
 }
 
+// ---------- move ----------
+
+// Reorder the top-level groups shown by ps / ui / the web UI. The current
+// group list is derived from what exists right now (compose projects on
+// disk + containers), same as ps builds it.
+async function cmdMove(args) {
+  const [name, to] = args;
+  if (!name || !to) die('usage: dockeru move <master|project> <up|down|top|bottom|position>');
+  const names = new Set();
+  for (const p of findComposeProjects()) names.add(p.parent || p.name);
+  for (const c of (await listContainers()).filter(c => c.inRoot)) {
+    names.add(c.parent || c.group || '');
+  }
+  const order = moveGroup(name, to, [...names]);
+  console.log(`${col('green', '✓')} moved ${name}`);
+  order.forEach((n, i) => console.log(
+    `  ${col('dim', String(i + 1).padStart(2))} ${n === name ? col('bold', n) : n}`));
+}
+
 // ---------- root ----------
 
 // Show or set the repo folder scanned for compose projects (shared with the
@@ -251,6 +272,15 @@ function cmdRepos(args) {
     console.log(`${col('green', '✓')} connected ${name} → ${url}`);
     return;
   }
+  if (sub === 'move') {
+    // url doubles as the position argument here: repos move <name> <where>
+    if (!name || !url) die('usage: dockeru repos move <name> <up|down|top|bottom|position>');
+    const repos = moveRepo(name, url);
+    console.log(`${col('green', '✓')} moved ${name}`);
+    repos.forEach((r, i) => console.log(
+      `  ${col('dim', String(i + 1).padStart(2))} ${r.name === name ? col('bold', r.name) : r.name}`));
+    return;
+  }
   if (sub === 'rm') {
     if (!name) die('usage: dockeru repos rm <name>');
     saveRepos(loadRepos().filter(r => r.name !== name));
@@ -288,6 +318,7 @@ ${col('bold', 'Containers')}
   dockeru stop <master|project|container>
   dockeru restart <master|project|container>
   dockeru switch <master|project|container>   stop everything else, start the target
+  dockeru move <master|project> <up|down|top|bottom|position>   reorder the ps/ui list
   dockeru kill [-f]                  stop ALL running containers (-f: SIGKILL)
   dockeru logs <container> [-f]      last 300 log lines (-f: follow)
   dockeru run <image> [docker run args…]   e.g. dockeru run nginx:alpine -p 8080:80
@@ -310,6 +341,7 @@ ${col('bold', 'Connected repositories')}
   dockeru repos                      list
   dockeru repos add <name> <git-url> [dockerfile]
   dockeru repos rm <name>
+  dockeru repos move <name> <up|down|top|bottom|position>   reorder the list
   dockeru build <name>               build repo into <name>:latest`;
 
 (async () => {
@@ -324,6 +356,7 @@ ${col('bold', 'Connected repositories')}
     case 'start': case 'stop': case 'restart': await cmdAction(cmd, args[0]); break;
     case 'up': case 'down': await cmdCompose(cmd, args[0]); break;
     case 'switch': await cmdSwitch(args[0]); break;
+    case 'move': await cmdMove(args); break;
     case 'kill': await cmdKill(args); break;
     case 'logs': {
       if (!args[0]) die('usage: dockeru logs <container> [-f]');
