@@ -2,6 +2,9 @@
 // container tree as `dockeru ps`; arrows move, enter toggles start/stop.
 // Plain ANSI + raw stdin, no dependencies (matches the no-framework rule).
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { docker, findComposeProjects, listContainers, groupComparator, startWaves, containerUrl, openInBrowser } = require('./lib');
 
 const C = {
@@ -377,6 +380,74 @@ async function openFile(name) {
   renderExplorer();
 }
 
+// Edit a file with $EDITOR: docker cp it out, hand the terminal to the
+// editor, then write changes back through `cat > file` inside the container
+// so the file's owner and permissions are preserved.
+async function editFile(name) {
+  const ex = explorer;
+  const full = joinPath(ex.path, name);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dockeru-edit-'));
+  const tmp = path.join(tmpDir, name);
+  const cleanup = () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} };
+  const fail = text => { cleanup(); msg = { ok: false, text }; renderExplorer(); };
+
+  // -L: the listing may show symlinks — edit what they point at
+  const pull = await new Promise(resolve => {
+    const p = spawn('docker', ['cp', '-L', `${ex.c.id}:${full}`, tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', d => (err += d));
+    p.on('close', code => resolve({ code, err: err.trim() }));
+  });
+  if (explorer !== ex) return cleanup();
+  if (pull.code !== 0) return fail(pull.err || 'docker cp failed');
+  const before = fs.readFileSync(tmp);
+
+  // Hand the tty to the editor: cooked mode, paused stdin (so our key
+  // listener doesn't steal input), normal screen. SIGINT is muted for the
+  // window before the editor sets its own terminal mode.
+  const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
+  const noop = () => {};
+  process.on('SIGINT', noop);
+  process.stdin.setRawMode(false);
+  process.stdin.pause();
+  leaveScreen();
+  const code = await new Promise(res =>
+    spawn('/bin/sh', ['-c', `${editor} ${shq(tmp)}`], { stdio: 'inherit' }).on('close', res));
+  enterScreen();
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.removeListener('SIGINT', noop);
+  if (explorer !== ex) return cleanup();
+  if (code !== 0) return fail(`editor exited with code ${code} — not saved`);
+  const after = fs.readFileSync(tmp);
+  if (after.equals(before)) { cleanup(); msg = { ok: true, text: `${name} unchanged` }; return renderExplorer(); }
+
+  // `cat > file` keeps the inode (owner/permissions intact). It can fail even
+  // as root: fs.protected_regular blocks O_CREAT on another user's file in
+  // sticky dirs like /tmp — fall back to recreate + restore owner and mode.
+  const script = `f=${shq(full)}
+own=$(stat -c %u:%g "$f" 2>/dev/null); mode=$(stat -c %a "$f" 2>/dev/null)
+if ! cat > "$f" 2>/dev/null; then
+  rm -f "$f" && cat > "$f" || exit 1
+  [ -z "$own" ] || chown "$own" "$f" 2>/dev/null || true
+  [ -z "$mode" ] || chmod "$mode" "$f" 2>/dev/null || true
+fi`;
+  const fd = fs.openSync(tmp, 'r');
+  const write = await new Promise(resolve => {
+    const p = spawn('docker', ['exec', '-i', ex.c.id, 'sh', '-c', script], { stdio: [fd, 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', d => (err += d));
+    p.on('close', c => resolve({ code: c, err: err.trim() }));
+  });
+  fs.closeSync(fd);
+  cleanup();
+  if (explorer !== ex) return;
+  if (write.code !== 0) return fail(write.err || `write failed (exit code ${write.code})`);
+  msg = { ok: true, text: `saved ${full}` };
+  if (ex.file && ex.file.name === name) return openFile(name); // refresh the open view
+  renderExplorer();
+}
+
 function renderExplorer() {
   if (!inScreen || !explorer) return;
   const ex = explorer;
@@ -384,6 +455,10 @@ function renderExplorer() {
   const height = process.stdout.rows || 24;
   const bodyH = Math.max(1, height - 2); // title + help
   const out = ['\x1b[H'];
+  // bottom line doubles as status: save/error messages replace the help text
+  const statusLine = help => '\x1b[2K' + (msg
+    ? (msg.ok ? C.green + ' ✓ ' : C.red + ' ✗ ') + msg.text.replace(/\s+/g, ' ').slice(0, width - 4) + C.reset
+    : C.dim + help + C.reset);
 
   if (ex.file) {
     const f = ex.file;
@@ -399,7 +474,7 @@ function renderExplorer() {
       out.push('\x1b[2K' + (l === undefined ? ''
         : C.dim + String(n + 1).padStart(nw) + C.reset + ' ' + l.slice(0, width - nw - 1)) + '\r\n');
     }
-    out.push('\x1b[2K' + C.dim + ' ↑↓ scroll · PgUp/PgDn page · g/G top/end · ←/q back' + C.reset);
+    out.push(statusLine(' ↑↓ scroll · PgUp/PgDn page · g/G top/end · e edit · ←/q back'));
     return void process.stdout.write(out.join(''));
   }
 
@@ -425,7 +500,7 @@ function renderExplorer() {
     }
     out.push('\x1b[2K' + line + '\r\n');
   }
-  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ⏎ open · ← up · g/G top/end · q back' + C.reset);
+  out.push(statusLine(' ↑↓ move · ⏎ open · e edit · ← up · g/G top/end · q back'));
   process.stdout.write(out.join(''));
 }
 
@@ -439,9 +514,11 @@ function closeExplorer() {
 function onExplorerKey(s) {
   const ex = explorer;
   const bodyH = Math.max(1, (process.stdout.rows || 24) - 2);
+  msg = null; // any key clears the status line
   if (ex.file) {
     const f = ex.file;
     if (s === 'q' || s === '\x1b' || s === '\x03' || s === '\x1b[D') { ex.file = null; return renderExplorer(); }
+    if (s === 'e') return editFile(f.name);
     if (s === '\x1b[A' || s === 'k') f.scroll--;
     else if (s === '\x1b[B' || s === 'j') f.scroll++;
     else if (s === '\x1b[5~') f.scroll -= bodyH;
@@ -452,6 +529,12 @@ function onExplorerKey(s) {
     return renderExplorer();
   }
   if (s === 'q' || s === '\x1b' || s === '\x03') return closeExplorer();
+  if (s === 'e') {
+    const name = ex.entries[ex.sel];
+    if (name === undefined) return;
+    if (name.endsWith('/')) { msg = { ok: false, text: 'select a file to edit' }; return renderExplorer(); }
+    return editFile(name);
+  }
   if (s === '\x1b[A' || s === 'k') ex.sel--;
   else if (s === '\x1b[B' || s === 'j') ex.sel++;
   else if (s === '\x1b[5~') ex.sel -= bodyH;
