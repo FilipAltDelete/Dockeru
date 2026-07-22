@@ -138,6 +138,18 @@ async function applyAction(action, targets) {
   return failed;
 }
 
+// ---------- kill ----------
+
+// Stop every running container (graceful stop by default, SIGKILL with -f).
+async function cmdKill(args) {
+  const force = args.includes('-f') || args.includes('--force');
+  const running = (await listContainers()).filter(c => c.state === 'running');
+  if (!running.length) return console.log('no running containers');
+  const action = force ? 'kill' : 'stop';
+  console.log(col('cyan', `==> ${action}ing all ${running.length} running container(s)`));
+  if (await applyAction(action, running)) process.exit(1);
+}
+
 // ---------- switch ----------
 
 // Stop everything running except the target, then bring the target up.
@@ -265,6 +277,10 @@ async function cmdBuild(name) {
 
 const HELP = `${col('bold', 'dockeru')} — manage docker containers, images and repo builds
 
+${col('bold', 'Interactive')}
+  dockeru                            full-screen UI: arrows to move, ⏎ to start/stop
+                                     (also: dockeru ui; falls back to ps when piped)
+
 ${col('bold', 'Containers')}
   dockeru ps [-r] [-a]               grouped container list, only the repo folder's
                                      projects (-r: running only, -a: everything)
@@ -272,6 +288,7 @@ ${col('bold', 'Containers')}
   dockeru stop <master|project|container>
   dockeru restart <master|project|container>
   dockeru switch <master|project|container>   stop everything else, start the target
+  dockeru kill [-f]                  stop ALL running containers (-f: SIGKILL)
   dockeru logs <container> [-f]      last 300 log lines (-f: follow)
   dockeru run <image> [docker run args…]   e.g. dockeru run nginx:alpine -p 8080:80
 
@@ -298,10 +315,16 @@ ${col('bold', 'Connected repositories')}
 (async () => {
   const [cmd, ...args] = process.argv.slice(2);
   switch (cmd) {
-    case 'ps': case 'ls': case undefined: await cmdPs(args); break;
+    case 'ps': case 'ls': await cmdPs(args); break;
+    // bare `dockeru` opens the UI in a terminal, but stays scriptable when piped
+    case 'ui': case undefined:
+      if (process.stdin.isTTY && process.stdout.isTTY) await require('./ui').start();
+      else await cmdPs(args);
+      break;
     case 'start': case 'stop': case 'restart': await cmdAction(cmd, args[0]); break;
     case 'up': case 'down': await cmdCompose(cmd, args[0]); break;
     case 'switch': await cmdSwitch(args[0]); break;
+    case 'kill': await cmdKill(args); break;
     case 'logs': {
       if (!args[0]) die('usage: dockeru logs <container> [-f]');
       const follow = args.includes('-f');
