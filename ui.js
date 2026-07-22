@@ -19,6 +19,7 @@ let showAll = false;
 let busy = null;              // status text while an action runs (input ignored)
 let msg = null;               // { ok, text } from the last action
 let child = null;             // spawned docker process (compose / logs)
+let logView = null;           // { name, lines, buf, scroll, follow, ended } while viewing logs
 let inScreen = false;         // alternate screen active → safe to render
 let timer = null;
 
@@ -122,7 +123,7 @@ function rowLine(r, isSel, width) {
 }
 
 function render() {
-  if (!inScreen) return;
+  if (!inScreen || logView) return;
   const width = process.stdout.columns || 80;
   const height = process.stdout.rows || 24;
   const bodyH = Math.max(1, height - 3); // title + status + help
@@ -144,6 +145,43 @@ function render() {
   else if (msg) status = (msg.ok ? C.green + ' ✓ ' : C.red + ' ✗ ') + msg.text.replace(/\s+/g, ' ').slice(0, width - 4) + C.reset;
   out.push('\x1b[2K' + status + '\r\n');
   out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · a all · q quit' + C.reset);
+  process.stdout.write(out.join(''));
+}
+
+// Scrollable log viewer — replaces the tree on the alternate screen while open.
+function appendLog(chunk) {
+  const lv = logView;
+  if (!lv) return;
+  lv.buf += chunk.toString().replace(/\r\n?/g, '\n');
+  const parts = lv.buf.split('\n');
+  lv.buf = parts.pop();
+  // Strip ANSI sequences: lines are sliced to the terminal width, and a cut
+  // color code would bleed into the rest of the screen.
+  for (const l of parts) lv.lines.push(l.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ''));
+  const drop = lv.lines.length - 5000;
+  if (drop > 0) { lv.lines.splice(0, drop); lv.scroll = Math.max(0, lv.scroll - drop); }
+  renderLogs();
+}
+
+function renderLogs() {
+  if (!inScreen || !logView) return;
+  const lv = logView;
+  const width = process.stdout.columns || 80;
+  const height = process.stdout.rows || 24;
+  const bodyH = Math.max(1, height - 2); // title + help
+  const max = Math.max(0, lv.lines.length - bodyH);
+  if (lv.follow) lv.scroll = max;
+  lv.scroll = Math.max(0, Math.min(lv.scroll, max));
+
+  const pos = lv.lines.length ? `${Math.min(lv.scroll + bodyH, lv.lines.length)}/${lv.lines.length}` : 'no output';
+  const state = lv.ended ? ' · stream ended' : (lv.follow ? ' · following' : '');
+  const out = ['\x1b[H'];
+  out.push('\x1b[2K' + C.bold + C.cyan + ' logs ' + lv.name + C.reset + C.dim + `  ${pos}${state}` + C.reset + '\r\n');
+  for (let i = 0; i < bodyH; i++) {
+    const l = lv.lines[lv.scroll + i];
+    out.push('\x1b[2K' + (l === undefined ? '' : l.slice(0, width)) + '\r\n');
+  }
+  out.push('\x1b[2K' + C.dim + ' ↑↓ scroll · PgUp/PgDn page · g/G top/end · q back' + C.reset);
   process.stdout.write(out.join(''));
 }
 
@@ -228,16 +266,16 @@ async function doSwitch(r) {
 
 async function showLogs(r) {
   if (r.type !== 'container') { msg = { ok: false, text: 'select a container to view logs' }; return render(); }
-  busy = 'logs';
-  leaveScreen();
-  process.stdout.write(C.cyan + `==> logs ${r.c.name} — Ctrl-C to return\n` + C.reset);
-  child = spawn('docker', ['logs', '--tail', '300', '-f', r.c.id], { stdio: ['ignore', 'inherit', 'inherit'] });
+  busy = 'logs'; // keeps the periodic refresh() away while the viewer is open
+  logView = { name: r.c.name, lines: [], buf: '', scroll: 0, follow: true, ended: false };
+  child = spawn('docker', ['logs', '--tail', '300', '-f', r.c.id], { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', appendLog);
+  child.stderr.on('data', appendLog);
+  renderLogs();
   await new Promise(res => child.on('close', res));
   child = null;
-  busy = null;
-  msg = null;
-  enterScreen();
-  await refresh();
+  if (logView) { logView.ended = true; renderLogs(); } // -f ended by itself → viewer stays open
+  else { busy = null; msg = null; await refresh(); }   // user quit the viewer
 }
 
 // ---------- input ----------
@@ -254,10 +292,31 @@ function fold(r, close) {
   rebuild();
 }
 
+function onLogKey(s) {
+  const lv = logView;
+  const bodyH = Math.max(1, (process.stdout.rows || 24) - 2);
+  if (s === 'q' || s === '\x1b' || s === '\x03') {
+    logView = null;
+    if (child) return child.kill('SIGINT'); // showLogs resumes after close
+    busy = null; msg = null;                // stream had already ended
+    return refresh();
+  }
+  if (s === '\x1b[A' || s === 'k') lv.scroll--;
+  else if (s === '\x1b[B' || s === 'j') lv.scroll++;
+  else if (s === '\x1b[5~') lv.scroll -= bodyH;
+  else if (s === '\x1b[6~') lv.scroll += bodyH;
+  else if (s === 'g') lv.scroll = 0;
+  else if (s === 'G') lv.scroll = Infinity;
+  else return;
+  lv.follow = lv.scroll >= lv.lines.length - bodyH; // scrolled to the end → keep following
+  renderLogs();
+}
+
 function onKey(buf) {
   const s = buf.toString();
+  if (logView) return onLogKey(s);
   if (s === '\x03') {                  // Ctrl-C: kill the docker child if one
-    if (child) return child.kill('SIGINT'); // is running, otherwise quit
+    if (child) return child.kill('SIGINT'); // is running (compose), otherwise quit
     return quit();
   }
   if (busy) return;
@@ -291,7 +350,7 @@ async function start() {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on('data', onKey);
-  process.stdout.on('resize', render);
+  process.stdout.on('resize', () => (logView ? renderLogs() : render()));
   process.on('SIGTERM', quit);
   enterScreen();
   render();
