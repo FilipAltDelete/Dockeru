@@ -2,7 +2,8 @@
 // dockeru CLI — manage containers, images and repo builds without the web UI.
 const { spawn } = require('child_process');
 const {
-  docker, loadRepos, saveRepos, findComposeProjects, listContainers,
+  docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
+  loadRepos, saveRepos, findComposeProjects, listContainers,
 } = require('./lib');
 
 const CODES = {
@@ -35,7 +36,11 @@ function fmtSize(bytes) {
 
 async function cmdPs(args) {
   const runningOnly = args.includes('-r') || args.includes('--running');
+  const showAll = args.includes('-a') || args.includes('--all');
   let cs = await listContainers();
+  // Like the web UI: only containers whose compose project lives under the
+  // repo folder, unless -a/--all
+  if (!showAll) cs = cs.filter(c => c.inRoot);
   if (runningOnly) cs = cs.filter(c => c.state === 'running');
   const projects = findComposeProjects();
 
@@ -184,6 +189,24 @@ async function cmdCompose(sub, name) {
   }
 }
 
+// ---------- root ----------
+
+// Show or set the repo folder scanned for compose projects (shared with the
+// web UI via data/settings.json).
+function cmdRoot(args) {
+  const [arg] = args;
+  if (!arg) {
+    const root = getRepoRoot();
+    console.log(root + (root === DEFAULT_REPO_ROOT ? col('dim', '  (default)') : ''));
+    return;
+  }
+  if (arg === '--reset') {
+    console.log(`${col('green', '✓')} repo folder reset to default: ${setRepoRoot(null)}`);
+    return;
+  }
+  console.log(`${col('green', '✓')} repo folder set to ${setRepoRoot(arg)}`);
+}
+
 // ---------- images / repos ----------
 
 async function cmdImages() {
@@ -243,7 +266,8 @@ async function cmdBuild(name) {
 const HELP = `${col('bold', 'dockeru')} — manage docker containers, images and repo builds
 
 ${col('bold', 'Containers')}
-  dockeru ps [-r]                    grouped container list (-r: running only)
+  dockeru ps [-r] [-a]               grouped container list, only the repo folder's
+                                     projects (-r: running only, -a: everything)
   dockeru start <master|project|container>
   dockeru stop <master|project|container>
   dockeru restart <master|project|container>
@@ -251,9 +275,14 @@ ${col('bold', 'Containers')}
   dockeru logs <container> [-f]      last 300 log lines (-f: follow)
   dockeru run <image> [docker run args…]   e.g. dockeru run nginx:alpine -p 8080:80
 
-${col('bold', 'Compose projects')} (auto-discovered under the repo root)
+${col('bold', 'Compose projects')} (auto-discovered under the repo folder)
   dockeru up <master|project>        docker compose up -d in the project dir
   dockeru down <master|project>      docker compose down (containers removed, volumes kept)
+
+${col('bold', 'Repo folder')} (shared with the web UI)
+  dockeru root                       show the folder scanned for compose projects
+  dockeru root <path>                set it
+  dockeru root --reset               revert to the default (REPO_ROOT env or parent folder)
 
 ${col('bold', 'Images')}
   dockeru images
@@ -287,6 +316,7 @@ ${col('bold', 'Connected repositories')}
       if (!args[0]) die(`usage: dockeru ${cmd} <image>`);
       process.exit(await sh([cmd, args[0]]));
     }
+    case 'root': cmdRoot(args); break;
     case 'repos': cmdRepos(args); break;
     case 'build': await cmdBuild(args[0]); break;
     case 'help': case '-h': case '--help': console.log(HELP); break;

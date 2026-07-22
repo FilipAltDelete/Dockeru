@@ -2,7 +2,8 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const {
-  docker, REPO_ROOT, loadRepos, saveRepos,
+  docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
+  loadRepos, saveRepos,
   composeFileIn, findComposeProjects, listContainers,
 } = require('./lib');
 
@@ -148,7 +149,7 @@ app.get('/api/projects', (req, res) => {
 // docker compose up -d in a project directory (streams output via SSE)
 app.get('/api/projects/up', (req, res) => {
   const dir = path.resolve(String(req.query.dir || ''));
-  if (!dir.startsWith(REPO_ROOT + path.sep) || !composeFileIn(dir)) {
+  if (!dir.startsWith(getRepoRoot() + path.sep) || !composeFileIn(dir)) {
     return res.status(400).end('not a compose project inside the repo root');
   }
   res.setHeader('Content-Type', 'text/event-stream');
@@ -167,6 +168,23 @@ app.get('/api/projects/up', (req, res) => {
     res.end();
   });
   req.on('close', () => proc.kill());
+});
+
+// ---------- Settings ----------
+
+app.get('/api/settings', (req, res) => {
+  res.json({ repoRoot: getRepoRoot(), defaultRepoRoot: DEFAULT_REPO_ROOT });
+});
+
+// Set the repo root scanned for compose projects; empty repoRoot reverts
+// to the default (REPO_ROOT env or the folder dockeru was cloned into).
+app.put('/api/settings', (req, res) => {
+  try {
+    const repoRoot = setRepoRoot(req.body.repoRoot);
+    res.json({ repoRoot, defaultRepoRoot: DEFAULT_REPO_ROOT });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ---------- Repositories ----------

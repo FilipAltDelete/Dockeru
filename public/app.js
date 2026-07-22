@@ -137,6 +137,11 @@ function renderContainers() {
     if (!$('#show-stopped').checked) {
       containers = containers.filter(c => c.state === 'running');
     }
+    // Hide containers whose compose project lives outside the repo folder
+    // (also hides non-compose containers, since they have no project dir)
+    if ($('#only-root').checked) {
+      containers = containers.filter(c => c.inRoot);
+    }
     if (!containers.length && !projects.length) {
       list.innerHTML = '<div class="empty">No containers</div>';
       return;
@@ -283,7 +288,8 @@ $('#containers-list').onclick = async e => {
 };
 
 $('#refresh-containers').onclick = loadContainers;
-$('#show-stopped').onchange = loadContainers;
+$('#show-stopped').onchange = renderContainers;
+$('#only-root').onchange = renderContainers;
 
 // ---------- run dialog ----------
 
@@ -430,6 +436,36 @@ $('#repos-list').onclick = async e => {
     if (!confirm(`Disconnect repository "${name}"? (built images are kept)`)) return;
     await api(`/api/repos/${encodeURIComponent(name)}`, { method: 'DELETE' });
     loadRepos();
+  }
+};
+
+// ---------- settings ----------
+
+$('#settings-btn').onclick = async () => {
+  try {
+    const s = await api('/api/settings');
+    $('#settings-root').value = s.repoRoot;
+    $('#settings-default').textContent = s.defaultRepoRoot;
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  $('#settings-overlay').classList.remove('hidden');
+};
+$('#settings-close').onclick = () => $('#settings-overlay').classList.add('hidden');
+
+$('#settings-form').onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ repoRoot: $('#settings-root').value.trim() }),
+    });
+    $('#settings-overlay').classList.add('hidden');
+    toast(`repo folder: ${s.repoRoot}`);
+    loadContainers();
+  } catch (err) {
+    toast(err.message, true);
   }
 };
 

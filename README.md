@@ -12,6 +12,28 @@ npm start          # http://localhost:3300  (or PORT=xxxx npm start)
 
 Requires access to `/var/run/docker.sock` and the `docker` CLI (used for git builds).
 
+## Repo folder
+
+dockeru scans one folder — the *repo folder* — for compose projects
+(`docker-compose.yml`/`compose.yml`, one or two levels deep; projects two
+levels deep are bundled under their parent "master" folder in the container
+list).
+
+By default the Containers tab only shows containers belonging to compose
+projects inside the repo folder — untick **only repo folder** in the toolbar
+to see everything on the machine (including non-compose containers).
+
+Set it from the app: click **⚙** in the top-right corner, enter the path, and
+save — it takes effect immediately and is stored in `data/settings.json`.
+Leaving the field empty reverts to the default. The setting is also available
+via the API (`GET`/`PUT /api/settings`) and applies to the CLI too.
+
+Resolution order:
+
+1. Folder set in the app (`data/settings.json`)
+2. `REPO_ROOT` environment variable (e.g. `REPO_ROOT=~/projects npm start`)
+3. Default: the parent of the folder dockeru is cloned into
+
 ## Desktop app
 
 `npm run app` opens the same UI as an Electron window with the server embedded
@@ -34,10 +56,11 @@ The same functionality is available without the web server via `dockeru`
 commands; highlights:
 
 ```bash
-dockeru ps               # grouped container list (same bundling as the UI)
+dockeru ps               # grouped container list, only the repo folder's projects (-a: everything)
 dockeru start repo   # start a master folder, project, or single container
 dockeru up repo # docker compose up -d in the project dir
 dockeru logs <name> -f   # follow logs
+dockeru root ~/projects  # set the repo folder (same setting as the web UI ⚙)
 dockeru repos add app https://github.com/user/app.git && dockeru build app
 ```
 

@@ -8,10 +8,13 @@ const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
 // Root under which project folders live; compose projects nested one level
 // deeper (e.g. <root>/swedsnus/swedsnus-test) get bundled under their parent.
-const REPO_ROOT = process.env.REPO_ROOT || path.dirname(__dirname);
+// Resolution order: settings.json (set from the UI) → REPO_ROOT env → the
+// folder this app was cloned into.
+const DEFAULT_REPO_ROOT = process.env.REPO_ROOT || path.dirname(__dirname);
 
 const DATA_DIR = path.join(__dirname, 'data');
 const REPOS_FILE = path.join(DATA_DIR, 'repos.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 function loadRepos() {
@@ -20,6 +23,35 @@ function loadRepos() {
 }
 function saveRepos(repos) {
   fs.writeFileSync(REPOS_FILE, JSON.stringify(repos, null, 2));
+}
+
+function loadSettings() {
+  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
+  catch { return {}; }
+}
+function saveSettings(settings) {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+}
+
+function getRepoRoot() {
+  return loadSettings().repoRoot || DEFAULT_REPO_ROOT;
+}
+
+// Persist a new repo root (empty/undefined reverts to the default).
+function setRepoRoot(dir) {
+  const settings = loadSettings();
+  if (!dir) {
+    delete settings.repoRoot;
+    saveSettings(settings);
+    return DEFAULT_REPO_ROOT;
+  }
+  const resolved = path.resolve(String(dir));
+  let stat;
+  try { stat = fs.statSync(resolved); } catch {}
+  if (!stat || !stat.isDirectory()) throw new Error(`not a directory: ${resolved}`);
+  settings.repoRoot = resolved;
+  saveSettings(settings);
+  return resolved;
 }
 
 const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
@@ -39,9 +71,10 @@ function projectNameFor(dir, fallback) {
   return fallback.toLowerCase();
 }
 
-// Scan REPO_ROOT for compose projects, one or two levels deep. A project two
-// levels deep is bundled under its parent ("master") folder.
+// Scan the repo root for compose projects, one or two levels deep. A project
+// two levels deep is bundled under its parent ("master") folder.
 function findComposeProjects() {
+  const root = getRepoRoot();
   const projects = [];
   const entries = dir => {
     try {
@@ -49,8 +82,8 @@ function findComposeProjects() {
         .filter(e => e.isDirectory() && !e.name.startsWith('.'));
     } catch { return []; }
   };
-  for (const top of entries(REPO_ROOT)) {
-    const d1 = path.join(REPO_ROOT, top.name);
+  for (const top of entries(root)) {
+    const d1 = path.join(root, top.name);
     if (composeFileIn(d1)) {
       projects.push({ name: projectNameFor(d1, top.name), dir: d1, parent: null });
       continue;
@@ -67,6 +100,7 @@ function findComposeProjects() {
 
 async function listContainers() {
   const repos = loadRepos();
+  const root = getRepoRoot();
   const containers = await docker.listContainers({ all: true });
   return containers.map(c => {
     const labels = c.Labels || {};
@@ -75,16 +109,18 @@ async function listContainers() {
       || (repos.some(r => r.name === (c.Image || '').split(':')[0])
           ? c.Image.split(':')[0] : null);
     // Master folder: compose project dirs nested under a shared parent
-    // inside REPO_ROOT (e.g. swedsnus/swedsnus-test → "swedsnus")
+    // inside the repo root (e.g. swedsnus/swedsnus-test → "swedsnus")
     let parent = null;
     const wd = labels['com.docker.compose.project.working_dir'] || '';
-    if (wd.startsWith(REPO_ROOT + path.sep)) {
-      const segs = path.relative(REPO_ROOT, wd).split(path.sep);
+    const inRoot = wd.startsWith(root + path.sep);
+    if (inRoot) {
+      const segs = path.relative(root, wd).split(path.sep);
       if (segs.length > 1) parent = segs[0];
     }
     return {
       group,
       parent,
+      inRoot,
       id: c.Id,
       shortId: c.Id.slice(0, 12),
       name: (c.Names[0] || '').replace(/^\//, ''),
@@ -100,7 +136,8 @@ async function listContainers() {
 }
 
 module.exports = {
-  docker, REPO_ROOT,
+  docker, DEFAULT_REPO_ROOT,
+  getRepoRoot, setRepoRoot,
   loadRepos, saveRepos,
   composeFileIn, findComposeProjects,
   listContainers,

@@ -45,6 +45,11 @@ nav { display: flex; gap: 0.25rem; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); background: var(--card); }
 
+.header-right { margin-left: auto; }
+
+.form-hint { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
+.form-hint code { color: var(--text); font-size: 0.75rem; word-break: break-all; }
+
 main { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
 
 .panel { display: none; }

@@ -14,6 +14,7 @@
       <button class="tab" data-tab="images">Images</button>
       <button class="tab" data-tab="repos">Repositories</button>
     </nav>
+    <button id="settings-btn" class="btn header-right" title="Settings">⚙</button>
   </header>
 
   <main>
@@ -22,6 +23,7 @@
       <div class="toolbar">
         <button id="refresh-containers" class="btn">↻ Refresh</button>
         <label class="toggle"><input type="checkbox" id="show-stopped" checked> show stopped</label>
+        <label class="toggle"><input type="checkbox" id="only-root" checked> only repo folder</label>
       </div>
       <div id="containers-list" class="card-list"></div>
     </section>
@@ -72,6 +74,24 @@
         <label>Ports <input id="run-ports" type="text" placeholder="host:container, comma-separated e.g. 8080:80"></label>
         <label>Env <input id="run-env" type="text" placeholder="KEY=val, comma-separated"></label>
         <button type="submit" class="btn primary">Start</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings dialog -->
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="overlay-box small">
+      <div class="overlay-head">
+        <span>Settings</span>
+        <button id="settings-close" class="btn">✕</button>
+      </div>
+      <form id="settings-form" class="run-form">
+        <label>Repo folder
+          <input id="settings-root" type="text" placeholder="/path/to/your/projects">
+        </label>
+        <p class="form-hint">Folder scanned for compose projects (one or two levels deep).
+          Leave empty to use the default: <code id="settings-default"></code></p>
+        <button type="submit" class="btn primary">Save</button>
       </form>
     </div>
   </div>
