@@ -17,17 +17,30 @@ const REPOS_FILE = path.join(DATA_DIR, 'repos.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
+// Read a JSON file, creating it with the fallback value if it doesn't exist.
+// A file that exists but can't be parsed is left untouched and the fallback
+// is returned, so a corrupt file is never silently overwritten.
+function loadJson(file, fallback) {
+  if (!fs.existsSync(file)) {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(fallback, null, 2) + '\n');
+    } catch {}
+    return fallback;
+  }
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch { return fallback; }
+}
+
 function loadRepos() {
-  try { return JSON.parse(fs.readFileSync(REPOS_FILE, 'utf8')); }
-  catch { return []; }
+  return loadJson(REPOS_FILE, []);
 }
 function saveRepos(repos) {
   fs.writeFileSync(REPOS_FILE, JSON.stringify(repos, null, 2));
 }
 
 function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
-  catch { return {}; }
+  return loadJson(SETTINGS_FILE, {});
 }
 function saveSettings(settings) {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
