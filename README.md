@@ -61,6 +61,7 @@ dockeru start repo   # start a master folder, project, or single container
 dockeru up repo # docker compose up -d in the project dir
 dockeru logs <name> -f   # follow logs
 dockeru root ~/projects  # set the repo folder (same setting as the web UI ⚙)
+dockeru editor code      # editor used by the UI file explorer ('e'); default $EDITOR/vi
 dockeru repos add app https://github.com/user/app.git && dockeru build app
 ```
 

@@ -5,7 +5,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { docker, findComposeProjects, listContainers, groupComparator, startWaves, containerUrl, openInBrowser } = require('./lib');
+const { docker, findComposeProjects, listContainers, groupComparator, startWaves, containerUrl, openInBrowser, editorCommand, getEditor } = require('./lib');
 
 const C = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', inv: '\x1b[7m',
@@ -148,7 +148,7 @@ function render() {
   if (busy) status = C.yellow + ' ' + busy + C.reset;
   else if (msg) status = (msg.ok ? C.green + ' ✓ ' : C.red + ' ✗ ') + msg.text.replace(/\s+/g, ' ').slice(0, width - 4) + C.reset;
   out.push('\x1b[2K' + status + '\r\n');
-  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · e files · o open · a all · q quit' + C.reset);
+  out.push('\x1b[2K' + C.dim + ' ↑↓ move · ←→ fold · ⏎ start/stop · r restart · s switch · u up · d down · l logs · e files/editor · o open · a all · q quit' + C.reset);
   process.stdout.write(out.join(''));
 }
 
@@ -318,7 +318,31 @@ function dockerExec(id, cmd) {
 
 const joinPath = (dir, name) => (dir === '/' ? '' : dir.replace(/\/$/, '')) + '/' + name;
 
+// 'e' on a master or project row: open its folder on disk in the configured
+// editor. Only GUI editors (code, subl, zed…) make sense here — a terminal
+// editor can't take over the UI for a whole directory. Spawned detached and
+// without --wait: we're not round-tripping a file, just opening a window.
+function openFolder(r) {
+  let dir = null;
+  if (r.type === 'project') dir = r.dir;
+  else {
+    // the master folder is the parent of any of its project dirs
+    const p = [...r.projects.values()].find(v => v.dir);
+    if (p) dir = path.dirname(p.dir);
+  }
+  if (!dir) { msg = { ok: false, text: `no folder on disk for ${r.name}` }; return render(); }
+  const editor = editorCommand();
+  if (!editor.gui) {
+    msg = { ok: false, text: `opening folders needs a GUI editor (dockeru editor code) — current: ${editor.name}` };
+    return render();
+  }
+  spawn('/bin/sh', ['-c', `${getEditor()} ${shq(dir)}`], { stdio: 'ignore', detached: true }).unref();
+  msg = { ok: true, text: `opened ${dir} in ${editor.name}` };
+  render();
+}
+
 async function openExplorer(r) {
+  if (r.type === 'master' || r.type === 'project') return openFolder(r);
   if (r.type !== 'container') { msg = { ok: false, text: 'select a container to browse its files' }; return render(); }
   if (r.c.state !== 'running') { msg = { ok: false, text: `${r.c.name} must be running to browse its files` }; return render(); }
   busy = 'files'; // pauses the periodic tree refresh while the explorer is open
@@ -380,9 +404,11 @@ async function openFile(name) {
   renderExplorer();
 }
 
-// Edit a file with $EDITOR: docker cp it out, hand the terminal to the
-// editor, then write changes back through `cat > file` inside the container
-// so the file's owner and permissions are preserved.
+// Edit a file with the configured editor (`dockeru editor`, falling back to
+// $EDITOR): docker cp it out, hand the terminal to the editor, then write
+// changes back through `cat > file` inside the container so the file's owner
+// and permissions are preserved. GUI editors (VS Code etc.) run with their
+// wait flag, so the write-back still happens when the file is closed.
 async function editFile(name) {
   const ex = explorer;
   const full = joinPath(ex.path, name);
@@ -405,14 +431,17 @@ async function editFile(name) {
   // Hand the tty to the editor: cooked mode, paused stdin (so our key
   // listener doesn't steal input), normal screen. SIGINT is muted for the
   // window before the editor sets its own terminal mode.
-  const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
+  const editor = editorCommand();
   const noop = () => {};
   process.on('SIGINT', noop);
   process.stdin.setRawMode(false);
   process.stdin.pause();
   leaveScreen();
+  if (editor.gui) {
+    process.stdout.write(C.dim + `waiting for ${editor.name} — save and close ${name} to write it back into the container (Ctrl-C cancels)\n` + C.reset);
+  }
   const code = await new Promise(res =>
-    spawn('/bin/sh', ['-c', `${editor} ${shq(tmp)}`], { stdio: 'inherit' }).on('close', res));
+    spawn('/bin/sh', ['-c', `${editor.cmd} ${shq(tmp)}`], { stdio: 'inherit' }).on('close', res));
   enterScreen();
   process.stdin.setRawMode(true);
   process.stdin.resume();

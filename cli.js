@@ -3,6 +3,7 @@
 const { spawn } = require('child_process');
 const {
   docker, DEFAULT_REPO_ROOT, getRepoRoot, setRepoRoot,
+  DEFAULT_EDITOR, getEditor, setEditor, editorCommand,
   loadRepos, saveRepos, moveRepo, groupComparator, moveGroup,
   findComposeProjects, listContainers, startWaves,
   containerUrl, openInBrowser,
@@ -37,8 +38,8 @@ function fmtSize(bytes) {
 // ---------- ps ----------
 
 async function cmdPs(args) {
-  const runningOnly = args.includes('-r') || args.includes('--running');
   const showAll = args.includes('-a') || args.includes('--all');
+  const runningOnly = !showAll;
   let cs = await listContainers();
   // Like the web UI: only containers whose compose project lives under the
   // repo folder, unless -a/--all
@@ -265,6 +266,29 @@ function cmdRoot(args) {
   console.log(`${col('green', '✓')} repo folder set to ${setRepoRoot(arg)}`);
 }
 
+// ---------- editor ----------
+
+// Show or set the editor the UI file explorer opens on 'e' (stored in
+// data/settings.json). GUI editors known to detach (VS Code, Sublime, Zed)
+// automatically get their --wait flag so saving back into the container works.
+function cmdEditor(args) {
+  if (!args.length) {
+    const editor = getEditor();
+    console.log(editor + (editor === DEFAULT_EDITOR ? col('dim', '  (default: $EDITOR, or vi)') : ''));
+    const { cmd, gui } = editorCommand();
+    if (gui && cmd !== editor) console.log(col('dim', `runs as: ${cmd} <file>`));
+    return;
+  }
+  if (args[0] === '--reset') {
+    console.log(`${col('green', '✓')} editor reset to default: ${setEditor(null)}`);
+    return;
+  }
+  const editor = setEditor(args.join(' '));
+  const { cmd, gui } = editorCommand();
+  console.log(`${col('green', '✓')} editor set to ${editor}`
+    + (gui && cmd !== editor ? col('dim', `  (runs with ${cmd.slice(editor.length).trim()} so saving works)`) : ''));
+}
+
 // ---------- images / repos ----------
 
 async function cmdImages() {
@@ -337,8 +361,8 @@ ${col('bold', 'Interactive')}
                                      (also: dockeru ui; falls back to ps when piped)
 
 ${col('bold', 'Containers')}
-  dockeru ps [-r] [-a]               grouped container list, only the repo folder's
-                                     projects (-r: running only, -a: everything)
+  dockeru ps [-a]                    running containers in the repo folder's
+                                     projects (-a: everything, incl. stopped)
   dockeru start <master|project|container>
   dockeru stop <master|project|container>
   dockeru restart <master|project|container>
@@ -357,6 +381,11 @@ ${col('bold', 'Repo folder')} (shared with the web UI)
   dockeru root                       show the folder scanned for compose projects
   dockeru root <path>                set it
   dockeru root --reset               revert to the default (REPO_ROOT env or parent folder)
+
+${col('bold', 'File editor')} (opened by 'e' in the UI file explorer)
+  dockeru editor                     show the editor command
+  dockeru editor <cmd>               set it, e.g. dockeru editor vim · dockeru editor code
+  dockeru editor --reset             revert to the default ($EDITOR, or vi)
 
 ${col('bold', 'Images')}
   dockeru images
@@ -400,6 +429,7 @@ ${col('bold', 'Connected repositories')}
       process.exit(await sh([cmd, args[0]]));
     }
     case 'root': cmdRoot(args); break;
+    case 'editor': cmdEditor(args); break;
     case 'repos': cmdRepos(args); break;
     case 'build': await cmdBuild(args[0]); break;
     case 'help': case '-h': case '--help': console.log(HELP); break;

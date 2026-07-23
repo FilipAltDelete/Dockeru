@@ -109,6 +109,41 @@ function setRepoRoot(dir) {
   return resolved;
 }
 
+// Editor used by the terminal UI's file explorer ('e' on a file).
+// Resolution order: settings.json editor → $EDITOR/$VISUAL → vi.
+const DEFAULT_EDITOR = process.env.EDITOR || process.env.VISUAL || 'vi';
+
+function getEditor() {
+  return loadSettings().editor || DEFAULT_EDITOR;
+}
+
+// Persist a new editor command (empty/undefined reverts to the default).
+function setEditor(cmd) {
+  const settings = loadSettings();
+  const clean = String(cmd || '').trim();
+  if (clean) settings.editor = clean;
+  else delete settings.editor;
+  saveSettings(settings);
+  return clean || DEFAULT_EDITOR;
+}
+
+// GUI editors detach from the terminal immediately; the edit round-trip
+// (copy out → edit → copy back) needs them to block until the file is
+// closed, so known ones get their wait flag added automatically.
+const GUI_EDITOR_WAIT = {
+  code: '--wait', 'code-insiders': '--wait', codium: '--wait',
+  vscodium: '--wait', subl: '--wait', zed: '--wait',
+};
+
+// The command actually run for editing: { cmd, gui, name }.
+function editorCommand() {
+  const raw = getEditor();
+  const name = path.basename(raw.trim().split(/\s+/)[0] || '');
+  const wait = GUI_EDITOR_WAIT[name];
+  const cmd = wait && !/(^|\s)(--wait|-w)(=|\s|$)/.test(raw) ? `${raw} ${wait}` : raw;
+  return { cmd, gui: wait !== undefined, name };
+}
+
 // Comparator for top-level container groups (masters and standalone
 // projects): saved order first, then alphabetical; the unnamed group last.
 // Groups are discovered at runtime, so names missing from the saved order
@@ -287,6 +322,7 @@ function startWaves(containers) {
 module.exports = {
   docker, DEFAULT_REPO_ROOT,
   getRepoRoot, setRepoRoot,
+  DEFAULT_EDITOR, getEditor, setEditor, editorCommand,
   loadRepos, saveRepos, moveRepo, reorderRepos,
   groupComparator, getGroupOrder, setGroupOrder, moveGroup,
   composeFileIn, findComposeProjects,

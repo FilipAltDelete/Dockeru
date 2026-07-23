@@ -382,14 +382,38 @@ $('#only-root').onchange = renderContainers;
 // ---------- exec dialog ----------
 
 let execTarget = null;
-// Last script per container name, so reruns (migrate, clear cache, …) are
-// one click. Session-only on purpose — scripts can contain secrets.
-const lastExecCmd = {};
+// Script history per container name, so reruns (migrate, clear cache, …) are
+// one click and ↑/↓ recall earlier runs. Session-only on purpose — scripts
+// can contain secrets.
+const execHistory = {};
+let histPos = null, histDraft = '';
+
+// ↑ recalls older commands, ↓ walks back toward the unsent draft. In the
+// textarea, only when the cursor is on the first/last line so multi-line
+// editing still works.
+function historyKeydown(e, name) {
+  const el = e.target, h = execHistory[name] || [];
+  if (!h.length) return;
+  if (e.key === 'ArrowUp') {
+    if (el.tagName === 'TEXTAREA' && el.value.slice(0, el.selectionStart).includes('\n')) return;
+    if (histPos === null) { histDraft = el.value; histPos = h.length; }
+    if (histPos > 0) histPos--;
+    e.preventDefault();
+    el.value = h[histPos];
+  } else if (e.key === 'ArrowDown' && histPos !== null) {
+    if (el.tagName === 'TEXTAREA' && el.value.slice(el.selectionEnd).includes('\n')) return;
+    e.preventDefault();
+    histPos++;
+    if (histPos >= h.length) { histPos = null; el.value = histDraft; }
+    else el.value = h[histPos];
+  }
+}
 
 function openExecDialog(id, name) {
   execTarget = { id, name };
+  histPos = null;
   $('#exec-title').textContent = `Run script in ${name}`;
-  $('#exec-cmd').value = lastExecCmd[name] || '';
+  $('#exec-cmd').value = (execHistory[name] || []).at(-1) || '';
   $('#exec-overlay').classList.remove('hidden');
   $('#exec-cmd').focus();
 }
@@ -401,6 +425,8 @@ $('#exec-cmd').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     $('#exec-form').requestSubmit();
+  } else if (execTarget) {
+    historyKeydown(e, execTarget.name);
   }
 };
 
@@ -421,7 +447,9 @@ let execConsole = null;
 
 function runInConsole(cmd) {
   const { id, name } = execConsole;
-  lastExecCmd[name] = cmd;
+  const h = execHistory[name] || (execHistory[name] = []);
+  if (h.at(-1) !== cmd) h.push(cmd);
+  histPos = null;
   const input = $('#overlay-exec-cmd');
   input.disabled = true;
   streamInto(`/api/containers/${id}/exec?cmd=${encodeURIComponent(cmd)}`).then(() => {
@@ -429,6 +457,10 @@ function runInConsole(cmd) {
     if (execConsole) input.focus();
   });
 }
+
+$('#overlay-exec-cmd').onkeydown = e => {
+  if (execConsole) historyKeydown(e, execConsole.name);
+};
 
 $('#overlay-exec').onsubmit = e => {
   e.preventDefault();
